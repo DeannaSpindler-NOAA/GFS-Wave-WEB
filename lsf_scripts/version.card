@@ -1,0 +1,5 @@
+export MODEL_VER=v16.3.3
+export WAVE_CODE_VER=v7.0
+export WAVE_CODE_PKG=st4nc
+export SYSVER='gfs.v16.3.3'
+export ENVIR='dev'
