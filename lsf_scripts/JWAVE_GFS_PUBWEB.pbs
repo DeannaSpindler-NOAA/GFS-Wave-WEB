@@ -1,0 +1,67 @@
+#!/bin/bash
+
+############################################
+### STUFF TO BE SET BY SMS IN PRODUCTION ###
+############################################
+
+#PBS -o JWAVE_GFS_PUBWEB.out
+#PBS -e JWAVE_GFS_PUBWEB.err
+#PBS -N JWAVE_GFS_PUBWEB
+#PBS -l walltime=1:00:00
+#PBS -l place=vscatter,select=1:ncpus=1:mem=8G
+#PBS -q dev_transfer
+#PBS -A GFS-DEV
+#PBS -V
+
+# Load dev_envir (sets up modules, global env etc)
+. ${LSFWAVE}/dev_envir.sh
+module list
+
+# Set variables
+export job=JWAVE_GFS_PUBWEB
+echo "job is $job"
+
+# Set PDY and cycle here
+
+sysver=`pwd | sed 's/\// /g' | awk '{print $NF}'`
+
+echo "in $0 sysver is $sysver"
+echo "in $0 LSFWAVE is $LSFWAVE"
+
+if [ -f $LSFWAVE/PDY_gfswave ]
+then
+   echo 'found PDY_gfswave'
+   . $LSFWAVE/PDY_gfswave
+else
+  echo '################################################################'
+  echo '### ERROR in PUBWEB.lsf !! : COULD NOT SET THE PDY AND CYCLE ###'
+  echo '################################################################'
+  exit 1
+fi
+
+# Set Version numbers
+
+echo "in $0 MODEL_VER is $MODEL_VER"
+if ! [ ${MODEL_VER} ]
+then
+  if [ -f $LSFWAVE/version.card ]
+  then
+    echo 'found version.card'
+    . $LSFWAVE/version.card
+  else
+    echo '##############################################'
+    echo '### ERROR !! : COULD NOT FIND VERSION CARD ###'
+    echo '##############################################'
+    exit 1
+  fi
+fi
+
+export DATA=$DATAROOT/${job}.${MODEL_VER}
+if [ -d $DATA ]; then
+  rm -rf $DATA/*
+fi
+
+# Execute the actual J job
+#######################################################
+${HOMEDIR}/VPPPG/EMC_waves-prod-gen/WEB/dev/wave_gfs.${MODEL_VER}/jobs/JWAVE_GFS_PUBWEB
+#######################################################

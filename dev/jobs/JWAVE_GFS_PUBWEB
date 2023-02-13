@@ -1,0 +1,130 @@
+#!/bin/bash
+
+######################################
+# SMS start command
+#####################################
+
+#$SMSBIN/smsinit ${job}
+
+set -xa
+# ###################################
+# SET WAVE SHELL PROCESSING VARIABLES
+# ###################################
+export PS4='$SECONDS + '
+
+echo 'In jobs/JWAVE_GFS_PUBWEB'
+date
+set +
+echo cyc is ${cyc:?}                      # ensure cyc defined
+echo envir is ${ENVIR:?}                  # ensure envir defined
+echo model_ver is ${MODEL_VER:?}          # ensure mod_ver defined
+echo wave_code_ver is ${WAVE_CODE_VER:?}  # ensure code_ver defined
+set -x
+
+#
+# obtain unique process id (pid) and make temp directory
+#
+export pid=$$
+
+#############################
+# SET rsync RELATED VARIABLES
+#############################
+
+export LRSYNC=/usr/bin/rsync
+export RRSYNC=/usr/bin/rsync
+
+# PATH for working directory
+
+if [ "$ENVIR" = 'prod' ] || [ "$ENVIR" = 'para' ] || [ "$ENVIR" = 'test' ]
+then
+   # NCO
+   export DATA=${DATAROOT}/${job}.${pid}
+   mkdir $DATA
+else
+   # 'dev'
+   export DATA=${DATAROOT}/${job}.${MODEL_VER}
+   if [ -d $DATA ]
+   then
+     rm -rf $DATA/*
+   fi
+   mkdir -p $DATA
+fi
+
+echo "in $0 DATA is $DATA"
+cd $DATA
+
+export cycle=t${cyc}z
+
+####################################################
+# File To Log Msgs named in lsf_scripts/dev_envir.sh
+####################################################
+echo "in $0 jlogfile is $jlogfile"
+
+#####################################
+# Determine Job Output Name on System
+#####################################
+export outid="LL$job"
+export jobid="${outid}.o${pid}"
+export pgmout="OUTPUT.${pid}"
+
+export MP_PULSE=0
+export sigMODE=web
+
+export NET=${NET:-wave}
+export RUN=${RUN:-gfswave}
+
+export SSH=/usr/bin/ssh
+export SCP=/usr/bin/scp
+
+# Run setup to initialize working directory and utility scripts
+#sh ${USHwave}/setup.sh
+${USHwave}/setup.sh
+
+# Set PDY
+sh ${PRODUTIL}/ush/setpdy.sh
+./PDY
+ 
+###################################
+# Set COM Paths
+###################################
+echo "In jobs/JWAVE_GFS_PUBWEB, WEB is ${WEB}"
+
+# roots in dev_envir.sh
+export COMIN=${COMIN}/${MODID}.${PDY}
+export COMOUT=${COMOUT}/${RUN}.${PDY}
+export WEBOUT=${WEB}/${RUN}.${PDY}${cyc}
+
+export BASEWEB=${WEB}/${RUN}.${PDY}${cyc}/plots
+export BASEFTP=${WEB}/${RUN}.${PDY}${cyc}/data
+export BASEBUOY=${WEB}/${RUN}.${PDY}${cyc}/buoy_locs
+
+export TARGETWEB=${RWEB}/${RUN}.${PDY}.${cycle}
+export TARGETFTP=${RFTP}/${RUN}.${PDY}.${cycle}
+
+export weblog=${COMOUT}/wave.log
+ 
+env
+
+###################################
+# Execute the Script
+###################################
+
+${HOMEwave}/scripts/exwave_gfs_pubweb.sh.ecf
+#export err=$?
+#$DATA/err_chk
+
+###################################
+# Remove temp directories
+###################################
+
+cd `dirname $DATA`
+#rm -rf $DATA
+
+date
+
+######################################
+# SMS end command (only for NCO)
+#####################################
+
+#$SMSBIN/smscomplete
+

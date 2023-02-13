@@ -1,0 +1,381 @@
+#!/bin/bash -l
+# --------------------------------------------------------------------------- #
+# gfswave.boss : Master script to run the multi-grid ocean wave model         #
+#                parallel version and/or private pieces of it.                #
+#                                                                             #
+# Remarks      - Can be run interactively, or from LL.                        #
+#                                                                             #
+#                                                               April 2011    #
+# transition to Dell, May 2020                                                #
+# transition to GFS Wave, June 2021                                           #
+# transition to WCOSS2, Sept 2022                                             #
+# --------------------------------------------------------------------------- #
+# 0.  Initializations
+# 0.a LL stuff
+
+
+## Setup the modules is done in gfswave.cron
+
+  module list 
+  echo "in $0 utilexec is $UTILEXEC"
+
+# 0.a Version card - now in dev_envir.sh
+  
+  echo "in $0 MODEL_VER is ${MODEL_VER}"  
+  version_file=version.card  
+  if ! [ ${MODEL_VER} ]
+  then
+    if [ -f ${LSFWAVE}/${version_file} ]
+	then
+      . ${LSFWAVE}/${version_file}
+    else
+      echo ' '
+	   echo ' *******************************************************'
+	   echo ' *** FILE WITH VERSION INFO NOT FOUND (version.card) ***'
+	   echo ' *******************************************************'
+	   echo ' '
+	   exit 20
+    fi
+  fi
+
+# 0.a Set necessary variables
+
+  touch $WAVELOG
+  echo "in $0 WAVELOG is ${WAVELOG}"
+
+  #export main_jobs='JWAVE_GFS_PUBWEB'  # main jobs to run
+  export main_jobs='JWAVE_GFS_WEB JWAVE_GFS_PUBWEB'  # main jobs to run
+  export spin_jobs=''  # jobs to be subset off.
+  #  export aux_jobs='JWAVE_gfswave_WMO JWAVE_gfswave_ARC'         # aux jobs, to be run
+  export aux_jobs=''         # aux jobs, to be run in parallel.
+  
+  export cycle_PDY='yes'                             # update PDY file ?
+  
+  if [ ! -d "$DATAROOT" ]
+  then
+    mkdir -p $DATAROOT
+  fi
+
+# 0.b ID output
+
+  cd $LSFWAVE
+  
+  echo ' '
+  echo '                  ***************************************'
+  echo '                  ***  WW3 MASTER SCRIPT gfswave.boss ***'
+  echo '                  ***************************************'
+  echo ' '
+  echo " Time : `date`"
+  echo ' '
+  echo '        Script settings :'
+  echo '        ------------------------------------------------------------'
+  echo "           model ID           : $RUN"
+  echo "           com directory      : $COMOUT"
+  echo "           web directory      : $WEB"
+  echo "           output directory   : $OUT"
+  echo "           main jobs          : $main_jobs"
+  echo "           spin-off jobs      : $spin_jobs"
+  echo "           auxiliary jobs     : $aux_jobs"
+
+# 0.c Set run time
+
+  if [ -f $LSFWAVE/PDY_$RUN ]
+  then
+    . $LSFWAVE/PDY_$RUN 
+  else
+    echo ' '
+	echo ' ***************************************************'
+	echo " *** FILE WITH TIME INFO NOT FOUND (PDY_$RUN)    ***"
+	echo ' ***************************************************'
+	echo ' '
+	date=`date -u +"%Y%m%d t%Hz"`
+	echo "$RUN.boss $date : PDY file not found." >> $WAVELOG
+	exit 1
+  fi
+
+  date=$PDY
+  cycle=t${cyc}z
+  YMDH=$date$cyc
+
+  echo ' '
+  echo "           date and cycle     : $date $cycle"
+
+  export weblog=${WEB}/wave.${YMDH}/wave.log               # log for web page
+  echo "in $0 logfile is $WAVELOG"
+  
+# 0.d Set Check files
+
+  export JWAVE_GFS_WEB=${MODID}.${cycle}.webdone
+  export JWAVE_GFS_PUBWEB=${MODID}.${cycle}.pubwebdone
+
+# 0.e Run cleanup script
+
+  #${USHwave}/cleanup.sh  $main_jobs $spin_jobs $aux_jobs
+
+# --------------------------------------------------------------------------- #
+# 1.  Clean up files
+#     Directories done in scrub.boss
+
+  echo ' '
+  echo " Time : `date`"
+  echo ' '
+  echo '        Clean up files :'
+  echo '        ------------------------------------------------------------'
+
+# 1.a Clean up output files
+
+  if [ -n "$main_jobs" ] || [ -n "$spin_jobs" ] || [ -n "$aux_jobs" ]
+  then
+    for job in $main_jobs $spin_jobs $aux_jobs
+    do
+      jobout=`cat ${job}.pbs | grep 'export job=' | sed 's/=/ /g' | awk '{print $3}'`
+      if [ -f $jobout.out ]
+      then
+        echo "           Removing $jobout.out"
+        #rm -f $jobout.out
+      else
+        echo "           File $jobout.out not found."
+      fi
+    done
+  fi
+
+# --------------------------------------------------------------------------- #
+# 2.  Run string of main jobs
+# 2.a Making output directory if necessary
+
+  cd $OUT
+  if [ ! -d ${RUN}.$date ]
+  then
+    echo "           Making output directory $OUT/${MODID}.$date"
+    mkdir -p ${RUN}.${date}
+  fi
+
+  cd ${COMOUT}
+  YMDHn=`$NDATE 24 $YMDH`
+  daten="`echo $YMDHn | cut -c1-8`"
+
+  if [ ! -d $RUN.$date ]
+  then
+    echo "           Making com directory ${COMOUT}/$MODID.$date"
+    mkdir -p $RUN.$date
+  fi
+
+  if [ ! -d $RUN.$daten ]
+  then
+    echo "           Making com directory ${COMOUT}/$MODID.$daten"
+    mkdir -p $RUN.$daten
+  fi
+
+  echo ' '
+  echo " Time : `date`"
+  echo ' '
+  echo '        Run main jobs (sequentially) :'
+  echo '        ------------------------------------------------------------'
+
+# 2.b Running main jobs if any
+
+  cd ${LSFWAVE}
+  #pid=$$
+
+  if [ -z "$main_jobs" ]
+  then
+    echo "           No main jobs to submit."
+  else
+    for job in $main_jobs
+    do
+      check=$(eval echo $`echo $job`)
+      echo "      in main_jobs check is $check"
+      if [ ! -f ${COMOUT}/${RUN}.${date}/${check} ]
+      then
+        echo " **************************************************** "
+        echo "           Starting ${job}.pbs at `date`"
+        echo " **************************************************** "
+        #/usr/bin/cp ${job}.pbs $batchloc/${job}.pbs.$pid
+        jobid=$(qsub ${LSFWAVE}/${job}.pbs)
+        
+        OK=$?
+        if [ "$OK" != '0' ]
+        then
+          echo "$RUN.boss $date $cycle : Error in qsub (main) ${job}.pbs" >> $WAVELOG
+          echo 'LAUNCHER ERROR: ${job}.pbs not submitted at host '`hostname`' at '`date` >> $WAVELOG
+          echo "error is $#"
+          exit 2
+        else
+          echo "LAUNCHER: ${job}.pbs is submitted - jobid ${jobid}"
+        fi
+      
+        # Output file name is now extracted from Jscripts
+        jobout=`cat ${job}.pbs | grep '#PBS -o' | sed 's/=/ /g' | awk '{print $3}'`
+        
+        echo "jobout is ${jobout}"
+        
+        # Used to be:
+        #while [ -n "qstat | grep $jobid" ] || [ ! -f ${jobout} ]
+        # but qsub makes the .out file as soon as the job is submitted
+        
+        # the next statement redirects qstat stderr to stdout and greps
+        # on "finished" as a test
+
+        while [ $(qstat $jobid 2>&1 | grep -c finished) = 0 ]
+        do
+          sleep 60s 
+        done
+               
+        if [ ! -f ${COMOUT}/${RUN}.${date}/$check ]
+        then
+          echo " ***********************************************"
+          echo " *** CHECK FILE FOR THIS JOB CANNOT BE FOUND ***"
+          echo " ***********************************************"
+          echo "                     Directory : ${COMOUT}/${RUN}.${date}"
+          echo "                     File      : ${check}"
+          echo "                     JOB       : ${job}"
+          echo "${RUN}.boss ${date} ${cycle} : check file not found." >> $WAVELOG
+          exit 3
+        fi                                                                                   
+      
+      fi
+    done
+    echo "           All finished at `date`"
+  fi
+
+# --------------------------------------------------------------------------- #
+# 3.  Run string of spin-off jobs  *** NOT PORTED TO WCOSS2 ***
+
+  if [ -z "$spin_jobs" ]
+  then
+    echo "           No jobs to spin-off."
+  else
+    echo ' '
+    echo " Time : `date`"
+    echo ' '
+    echo "        Submit spin-off jobs (don't wait) :"
+    echo '        ------------------------------------------------------------'
+
+    jobnames=
+    for job in $spin_jobs
+    do
+      echo "           Starting $job at `date`"
+      #qsub < $job.lsf  > $llst 2> $llse
+      spinjobID=$(qsub $LSFWAVE/${job}.lsf)
+      OK=$?
+      if [ "$OK" != '0' ]
+      then
+        cat $LSFWAVE/${job}.out >> $OUT/${RUN}.$date/${job}.out.$cycle
+        cat $LSFWAVE/${job}.err >> $OUT/${RUN}.$date/${job}.out.$cycle
+        echo "$RUN.boss $date $cycle : Error in qsub (spin) ${job}." >> $WAVELOG
+        exit 4
+      fi
+ 
+      #jobID=`cat $llst | awk '{print $2}' | sed 's/<//g' | sed 's/>//g'`
+      echo "              spin JobID is $spinjobID"
+#      jobname="`sed 's/\"//g' $llst | sed 's/\.ncep\.noaa\.gov//g' \
+#                                    | awk '{ print $4 }'`"
+#      echo "              Job name is $jobname"
+
+    done
+  fi
+
+# --------------------------------------------------------------------------- #
+# 4.  Run string of aux jobs  **** NOT PORTED TO WCOSS2 ***
+
+  if [ -z "$aux_jobs" ]
+  then
+    echo "           No auxiliary jobs to submit."
+  else
+    echo ' '
+    echo " Time : `date`"
+    echo ' '
+    echo '        Run auxiliary jobs (in parallel) :'
+    echo '        ------------------------------------------------------------'
+    
+    jobnames=
+    for job in $aux_jobs
+    do
+      echo "           Starting $job at `date`"
+      #llsubmit $job  > $llst 2> $llse
+      #bsub < $job.lsf  > $llst 2> $llse
+      auxjobID=$(qsub $LSFWAVE/${job}.lsf)
+      OK=$?
+      if [ "$OK" != '0' ]
+      then
+        cat $LSFWAVE/${job}.out >> $OUT/${RUN}.$date/${job}.out.$cycle
+        cat $LSFWAVE/${job}.err >> $OUT/${RUN}.$date/${job}.out.$cycle        
+        echo "$RUN.boss $date $cycle : Error in qsub (aux) ${job}." >> $WAVELOG
+        exit 5
+      fi
+ 
+      #jobID=`cat $llst | awk '{print $2}' | sed 's/<//g' | sed 's/>//g'`
+      echo "          aux Job ID is $auxjobID"
+#      jobname="`sed 's/\"//g' $llst | sed 's/\.ncep\.noaa\.gov//g' \
+#                                    | awk '{ print $4 }'`"
+#      echo "              Job name is $jobname"
+ 
+      if [ -z "$jobIDs" ]
+      then
+        jobIDs=$jobID
+      else
+        jobIDs="$jobIDs $jobID"
+      fi
+    done
+
+    for job in $aux_jobs
+    do
+# Output file name is now extracted from llc Jscripts
+
+      jobout=`cat ${job}.lsf | grep 'export job=' | sed 's/=/ /g' | awk '{print $3}'`
+      echo " Out file is  ${jobout}.out"
+      while [ ! -f ${jobout}.out ]
+      do
+        sleep 30
+      done
+    done
+
+    for jobID in $jobIDs
+    do
+      while [ -n "`bjobs | grep $jobID`" ]
+      do
+        sleep 60
+      done
+    done
+
+    for job in $aux_jobs
+    do
+      jobout=`cat ${job}.lsf | grep 'export job=' | sed 's/=/ /g' | awk '{print $3}'`
+      mv ${jobout}.out $out/${RUN}.$date/$job.$cycle.out
+    done
+
+    echo "           All finished at `date`"
+  fi
+
+# --------------------------------------------------------------------------- #
+# 5.  What to do next ?
+
+  if [ "$cycle_PDY" = 'yes' ] 
+  then
+    echo ' '
+    echo " Time : `date`"
+    echo ' '
+
+    YMDHn=`$NDATE 6 $YMDH`
+    daten="`echo $YMDHn | cut -c1-8`"
+    cycn="`echo $YMDHn | cut -c9-10`"
+    cyclen="t${cycn}z"
+
+    cd $LSFWAVE
+    echo "export PDY=$daten"    > $LSFWAVE/PDY_${RUN}
+    echo "export cyc=$cycn"    >> $LSFWAVE/PDY_${RUN}
+
+    echo "        PDY file set to $daten $cyclen"
+
+  fi
+
+# --------------------------------------------------------------------------- #
+# 6.  End of it all
+
+  echo ' '
+  echo " Time : `date`"
+  echo ' '
+  echo ' '
+  echo '                        *** End of gfswave.boss ***'
+
+# - end of gfswave.boss ----------------------------------------------------- #

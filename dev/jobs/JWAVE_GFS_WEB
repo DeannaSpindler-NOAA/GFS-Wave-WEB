@@ -1,0 +1,82 @@
+#!/bin/bash
+
+echo 'In jobs/JWAVE_GFS_WEB'
+date
+export PS4=' $SECONDS + '
+set -xa
+
+# PATH for working directory
+export NET=${NET:-wave}
+export RUN=${RUN:-gfswave}
+
+export DATA=${DATA:-${TMP:?}/${jobid}}
+mkdir -p $DATA
+cd $DATA
+
+echo "in jobs/JWAVE_GFS_WEB jobid is $jobid"
+echo "in jobs/JWAVE_GFS_WEB job is $job"
+echo "in jobs/JWAVE_GFS_WEB DATA is $DATA"
+
+export cyc=${cyc:-00}
+export cycle=${cycle:-t${cyc}z}
+export pgmout=OUTPUT.$$
+
+export MP_PULSE=0
+
+export MODID=${MODID:-gfs}
+export sigMODE=${sigMODE:-post}
+
+###################################
+# Set up the UTILITIES             
+###################################
+export utilexec=${UTILROOT}/exec
+
+# Run setup to initialize working directory and utility scripts
+
+${USHwave}/setup.sh
+## postmsg not getting copied? 
+cp ${UTILROOT}/ush/postmsg ${DATA}/postmsg
+
+# Set PDY
+${UTILROOT}/ush/setpdy.sh
+./PDY
+
+######################################
+# Set COM Paths and GETGES environment
+######################################
+
+# roots in dev_envir.sh
+export COMIN=${COMIN}/${MODID}.${PDY}
+export COMOUT=${COMOUT}/${RUN}.${PDY}
+export WEBOUT=${WEB}/${RUN}.${PDY}${cyc}
+
+echo "In jobs/JWAVE_GFS_WEB, WEBOUT is ${WEBOUT}"
+echo "In jobs/JWAVE_GFS_WEB, COMIN is ${COMIN}"
+
+if [ $SENDCOM = YES ]; then
+  mkdir -p $COMOUT
+  mkdir -p $WEBOUT
+  mkdir -p $WEBOUT/data
+  mkdir -p $WEBOUT/plots
+  mkdir -p $WEBOUT/buoy_locs
+fi
+
+env
+
+
+###################################
+# Execute the Script               
+###################################
+
+${HOMEwave}/scripts/exwave_gfs_web.sh.ecf
+
+###################################
+# Remove temp directories          
+###################################
+KEEPDATA='YES'
+if [ "$KEEPDATA" != "YES" ]; then
+  cd $TMP
+  rm -rf $DATA
+fi
+date
+

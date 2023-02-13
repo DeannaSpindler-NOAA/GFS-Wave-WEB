@@ -1,0 +1,571 @@
+#!/bin/bash
+###############################################################################
+#                                                                             #
+# This script is used to push web data to the web data server                 #
+#                                                                             #
+#                                                                Jul, 2013    #
+#                                                                             #
+# Updated for the vertical structure                                          #
+# Updated for the WCOSS system                                                #
+# Modified for GFS-Wave : Aug 2021                                            #
+# Ported to WCOSS2: September 2022                                            #
+###############################################################################
+
+
+# 0. Preparation 
+
+  set -x
+  # Use LOUD variable to turn on/off trace.  Defaults to YES (on).
+  export LOUD=${LOUD:-YES}; [[ $LOUD = yes ]] && export LOUD=YES
+  [[ "$LOUD" != YES ]] && set +x
+
+  set +x
+  echo ' '
+  echo '                ****************************** '
+  echo '                *** GFS-Wave pubweb script *** '
+  echo '                ****************************** '
+  echo ' '
+  echo " Starting time : `date` "
+  echo ' '
+  echo "    remote user : $USRID "
+  echo "    remote host : $HOST "
+  echo "    remote web  : $TARGETWEB "
+  echo "    remote ftp  : $TARGETFTP "
+  echo "    local web   : $BASEWEB "
+  echo "    local ftp   : $BASEFTP "
+  echo ' '
+  [[ "$LOUD" = YES ]] && set -x
+
+  exit_code=0
+  push_web='yes'
+  push_ftp=''
+  cleanup_OK='yes'
+
+# 0.a Defining map views
+
+  map_views='pacific N_pacific hawaii indian_o gmex atlantic N_atlantic alaska US_wc_zm1 US_wc_zm2 US_eastcoast US_keywest US_puertorico NW_atlantic NE_pacific NE_atlantic aus_ind_phi pac_islands arctic'
+
+# --------------------------------------------------------------------------------- #
+# 1. Setting up directories
+
+# 1.a Checking local directories
+# 1.a.1 Check if web processing complete
+
+  if [ ! -f $COMOUT/$MODID.$cycle.webdone ]
+  then
+    set +x
+    echo ' '
+    echo '   *************************** '
+    echo '   *** WEB Files not ready *** '
+    echo '   *************************** '
+    echo ' '
+    [[ "$LOUD" = YES ]] && set -x
+    exit 1
+    push_web='no'
+    push_ftp='no'
+  fi
+
+# 1.a.2 Check for local web directory
+
+  if [ -d $BASEWEB ]
+  then
+    nr=`ls $BASEWEB/map*.${cycle}.tar | wc -l | awk '{ print $1 }'`
+    if [ "$nr" = '0' ]
+    then
+      set +x
+      echo ' '
+      echo ' ************************************** '
+      echo ' *** No plot files in web directory *** '
+      echo ' ************************************** '
+      echo ' '
+      [[ "$LOUD" = YES ]] && set -x
+      exit_code=1
+      push_web='no'
+    fi
+  else
+    set +x
+    echo ' '
+    echo ' ************************************ '
+    echo ' *** Base WEB Directory not found *** '
+    echo ' ************************************ '
+    echo ' '
+    [[ "$LOUD" = YES ]] && set -x
+    exit_code=2
+    push_web='no'
+  fi
+
+# 1.a.3 Check for local ftp directory
+
+  if [ -d $BASEFTP ]
+  then
+    nr=`ls $BASEFTP/*.bull | wc -l | awk '{ print $1 }'`
+    if [ "$nr" = '0' ]
+    then
+      set +x
+      echo ' '
+      echo ' ****************************************** '
+      echo ' *** No bulletin files in ftp directory *** '
+      echo ' ****************************************** '
+      echo ' '
+      [[ "$LOUD" = YES ]] && set -x
+      exit_code=3
+      push_ftp='no'
+    fi
+  else
+    set +x
+    echo ' '
+    echo ' ************************************ '
+    echo ' *** Base FTP Directory not found *** '
+    echo ' ************************************ '
+    echo ' '
+    [[ "$LOUD" = YES ]] && set -x
+    exit_code=4
+    push_ftp='no'
+  fi
+
+# 1.b Creating remote directories 
+# 1.b.1 Remote web directory
+
+  if [ "$push_web" = 'yes' ] 
+  then
+
+    TARGETWEBTMP="${TARGETWEB}.filling"
+    $SSH ${USRID}@${HOST} mkdir -p $TARGETWEBTMP > targetweb.out 2>&1
+    OK=$?
+
+    if [ "$OK" != '0' ]
+    then
+      set +x
+      echo ' '
+      echo ' ******************************************* '
+      echo ' *** Error creating remote web directory *** '
+      echo ' ******************************************* '
+      echo ' '
+      sed "s/^/targetweb.out : /g" targetweb.out
+      [[ "$LOUD" = YES ]] && set -x
+      exit_code=5
+      push_web='no'
+    else
+      set +x
+      echo ' '
+      echo ' Target web directory created'
+      echo ' '
+      [[ "$LOUD" = YES ]] && set -x
+      rm -f targetweb.out
+    fi
+
+  fi
+
+# 1.b.2 remote ftp directory
+
+  if [ "$push_ftp" = 'yes' ] 
+  then
+
+    TARGETFTPTMP="${TARGETFTP}.filling"
+    $SSH ${USRID}@${HOST} mkdir -p $TARGETFTPTMP > targetftp.out 2>&1
+    OK=$?
+
+    if [ "$OK" != '0' ]
+    then
+      set +x
+      echo ' '
+      echo ' ******************************************* '
+      echo ' *** Error creating remote ftp directory *** '
+      echo ' ******************************************* '
+      echo ' '
+      sed "s/^/targetftp.out : /g" targetftp.out
+      [[ "$LOUD" = YES ]] && set -x
+      exit_code=6
+      push_ftp='no'
+    else
+      set +x
+      echo ' '
+      echo ' Target ftp directory created'
+      echo ' '
+      [[ "$LOUD" = YES ]] && set -x
+      rm -f targetftp.out
+    fi
+
+  fi
+
+# 1.c Summary
+
+  set +x
+  echo ' '
+  echo " Data being pushed to $HOST"
+  echo ' --------------------------'
+  echo "   web data   : $push_web "
+  echo "   ftp data   : $push_ftp "
+  echo ' '
+  [[ "$LOUD" = YES ]] && set -x
+
+# --------------------------------------------------------------------------------- #
+# 2. Pushing data
+# 2.a Web data
+
+  args="-rlptv --rsh $SSH --rsync-path $RRSYNC --timeout=3600"
+
+  if [ "$push_web" = 'yes' ]
+  then
+
+# 2.a.0 bulletins
+
+    $SSH ${USRID}@${HOST} mkdir -p $TARGETWEBTMP/plots > targetweb.out 2>&1
+    OK=$?
+
+    if [ "$OK" != '0' ]
+    then
+      set +x
+      echo ' '
+      echo ' ************************************************* '
+      echo ' *** Error creating remote web plots directory *** '
+      echo ' ************************************************* '
+      echo ' '
+      sed "s/^/targetweb.out : /g" targetweb.out
+      [[ "$LOUD" = YES ]] && set -x
+      exit_code=5
+      push_web='no'
+    else
+      set +x
+      echo ' '
+      echo ' Target web plots directory created'
+      echo ' '
+      [[ "$LOUD" = YES ]] && set -x
+      rm -f targetweb.out
+    fi
+    
+    #$LRSYNC $args $BASEFTP $USRID@$HOST\:${TARGETWEBTMP}/plots/ > rsyncwebbull.out
+    scp $BASEFTP/* $USRID@$HOST\:${TARGETWEBTMP}/plots/. > rsyncwebbull.out
+    OK=$?
+
+    if [ "$OK" != '0' ]
+    then
+      set +x
+      echo ' '
+      echo ' *********************************** '
+      echo ' *** Error pushing web bulletins *** '
+      echo ' *********************************** '
+      echo ' '
+      sed "s/^/rsyncwebbull.out : /g" rsyncwebbull.out
+      [[ "$LOUD" = YES ]] && set -x
+      push_web='no'
+      exit_code=7
+    else
+      set +x
+      echo ' '
+      echo ' bulletin files pushed to remote server'
+      echo ' '
+      [[ "$LOUD" = YES ]] && set -x
+      rm -f rsyncwebbull.out
+    fi
+
+# 2.a.1 plots 
+
+    $LRSYNC $args $BASEWEB $USRID@$HOST\:$TARGETWEBTMP > rsyncwebplots.out
+    OK=$?
+
+    if [ "$OK" != '0' ]
+    then
+      set +x
+      echo ' '
+      echo ' ******************************* '
+      echo ' *** Error pushing web plots *** '
+      echo ' ******************************* '
+      echo ' '
+      sed "s/^/rsyncwebplots.out : /g" rsyncwebplots.out
+      [[ "$LOUD" = YES ]] && set -x
+      push_web='no'
+      exit_code=7
+    else
+      set +x
+      echo ' '
+      echo ' plot data pushed to remote m/c'
+      echo ' '
+      [[ "$LOUD" = YES ]] && set -x
+      rm -f rsyncwebplots.out
+    fi
+
+# 2.a.2 buoy info (for maps)
+
+    $LRSYNC $args $BASEBUOY $USRID@$HOST\:$TARGETWEBTMP > rsyncwebbuoy.out
+    OK=$?
+
+    if [ "$OK" != '0' ]
+    then
+      set +x
+      echo ' '
+      echo ' ******************************* '
+      echo ' *** Error pushing buoy maps *** '
+      echo ' ******************************* '
+      echo ' '
+      sed "s/^/rsyncwebbuoy.out : /g" rsyncwebbuoy.out
+      [[ "$LOUD" = YES ]] && set -x
+      push_web='no'
+      exit_code=8
+    else
+      set +x
+      echo ' '
+      echo ' buoy data pushed to remote m/c'
+      echo ' '
+      [[ "$LOUD" = YES ]] && set -x
+      rm -f rsyncwebbuoy.out
+    fi
+
+# 2.a.3 Untar image files
+
+    if [ "$push_web" = 'yes' ]
+    then
+
+      for view in $map_views
+      do
+       
+        ssh $USRID@$HOST "cd $TARGETWEBTMP/plots/; \
+         tar xvf $TARGETWEBTMP/plots/map_${view}.$cycle.tar" > untar_map_${view}.$cycle.out 
+        err=$?
+
+        if [ "$err" != 0 ]
+        then
+          set +x
+          echo "    ERROR: Could not unpack tar file for $view map plots"
+          [[ "$LOUD" = YES ]] && set -x
+          exit_code=9
+        else
+          set +x
+          echo "    UnTarred $nimg $view map plots at `date`"
+          [[ "$LOUD" = YES ]] && set -x
+
+          ssh $USRID@$HOST "rm -f $TARGETWEBTMP/plots/map_${view}.$cycle.tar"
+          err=$?
+          if [ "$err" != 0 ]
+          then
+            set +x
+            echo "    ERROR : Could not succesfully remove tar file for $view"
+            [[ "$LOUD" = YES ]] && set -x
+            exit_code=10
+          fi
+
+        fi
+
+      done
+    
+      for typlot in spectra source
+      do
+
+        ssh $USRID@$HOST "cd $TARGETWEBTMP/plots/; \
+         tar xvf $TARGETWEBTMP/plots/plots_${typlot}.$cycle.tar" > untar_plots_${typlot}.$cycle.out
+        err=$?
+
+        if [ "$err" != 0 ]
+        then
+          set +x
+          echo "    ERROR: Could not unpack tar file for ${typlot} plots"
+          [[ "$LOUD" = YES ]] && set -x
+          exit_code=11
+        else
+          set +x 
+          echo "    UnTarred $nimg ${typlot} plots at `date`"
+          [[ "$LOUD" = YES ]] && set -x 
+
+          ssh $USRID@$HOST "rm -f $TARGETWEBTMP/plots/plots_${typlot}.$cycle.tar"
+          err=$?
+
+          if [ "$err" != 0 ]
+          then
+            set +x
+            echo "    ERROR : Could not succesfully remove tar file for ${typlot}"
+            [[ "$LOUD" = YES ]] && set -x
+            exit_code=12
+          fi
+
+        fi
+
+      done
+
+    fi
+
+  fi
+
+# 2.b ftp data
+
+  if [ "$push_ftp" = 'yes' ]
+  then
+
+    $LRSYNC $args $BASEFTP $USRID@$HOST\:$TARGETFTPTMP > rsyncftpdata.out
+    OK=$?
+
+    if [ "$OK" != '0' ]
+    then
+      set +x
+      echo ' '
+      echo ' ******************************* '
+      echo ' *** Error pushing  ftp data *** '
+      echo ' ******************************* '
+      echo ' '
+      sed "s/^/rsyncftpdata.out : /g" rsyncftpdata.out
+      [[ "$LOUD" = YES ]] && set -x 
+      push_ftp='no'
+      exit_code=13
+    else
+      set +x
+      echo ' '
+      echo ' ftp data pushed to remote m/c'
+      echo ' '
+      [[ "$LOUD" = YES ]] && set -x
+      rm -f rsyncftpdata.out
+    fi
+
+  fi
+ 
+# --------------------------------------------------------------------------------- #
+#3. Clean up script (script is run on remote m/c, but maintained on ush)
+# 3.a Copy clean up script to pub web host
+  if [ "$push_web" = 'yes' ] || [ "$push_ftp" = 'yes' ]
+  then
+
+    $SCP $USHwave/pubweb_cleanup.sh $USRID@$HOST\:${RHOME}/bin. > scp_cleanup.out
+    OK=$?
+
+    if [ "$OK" != '0' ]
+    then
+      set +x
+      echo ' '
+      echo ' ********************************************** '
+      echo ' *** Error copying cleanup script to remote *** '
+      echo ' ********************************************** '
+      echo ' '
+      sed "s/^/scp_cleanup.out : /g" scp_cleanup.out
+      [[ "$LOUD" = YES ]] && set -x
+      cleanup_OK='no'
+      exit_code=14
+    else
+      rm -f scp_cleanup.out
+    fi
+ 
+  fi
+
+# 3.b Clean up web directories
+
+  if [ "$push_web" = 'yes' ]
+  then
+
+    $SSH ${USRID}@${HOST} rm -rf $TARGETWEB > rmweb.out 2>&1
+    $SSH $USRID@$HOST mv $TARGETWEBTMP $TARGETWEB > mv_web.out 2>&1
+    OK=$?
+
+    if [ "$OK" != '0' ]
+    then
+      set +x
+      echo ' '
+      echo ' ************************************************** '
+      echo ' *** Error moving web data to final destination *** '
+      echo ' ************************************************** '
+      echo ' '
+      sed "s/^/mv_web.out : /g" mv_web.out
+      [[ "$LOUD" = YES ]] && set -x
+      cleanup_OK='no'
+      exit_code=15
+    else
+      rm -f mv_web.out
+    fi
+ 
+    $SSH $USRID@$HOST /bin/sh $RHOME/bin/pubweb_cleanup.sh $RWEB $RUN yes yes > ssh_webcleanup.out
+    OK=$?
+
+    if [ "$OK" != '0' ]
+    then
+      set +x
+      echo ' '
+      echo ' ********************************************** '
+      echo ' *** Error running cleanup script in remote *** '
+      echo ' ********************************************** '
+      echo ' '
+      sed "s/^/ssh_webcleanup.out : /g" ssh_webcleanup.out
+      [[ "$LOUD" = YES ]] && set -x
+      cleanup_OK='no'
+      exit_code=16
+    else
+      set +x
+      echo ' '
+      echo ' Web clean up OK. '
+      echo ' '
+      sed "s/^/ssh_webcleanup.out : /g" ssh_webcleanup.out
+      [[ "$LOUD" = YES ]] && set -x
+      rm -f ssh_webcleanup.out
+    fi
+  fi
+
+# 3.c Clean up ftp directories
+
+  if [ "$push_ftp" = 'yes' ]
+  then
+ 
+    $SSH ${USRID}@${HOST} rm -rf   $TARGETFTP > rmweb.out 2>&1
+    $SSH $USRID@$HOST mv $TARGETFTPTMP $TARGETFTP  > mv_ftp.out 2>&1
+    OK=$?
+
+    if [ "$OK" != '0' ]
+    then
+      set +x
+      echo ' '
+      echo ' ************************************************** '
+      echo ' *** Error moving ftp data to final destination *** '
+      echo ' ************************************************** '
+      echo ' '
+      sed "s/^/mv_ftp.out : /g" mv_ftp.out
+      [[ "$LOUD" = YES ]] && set -x
+      cleanup_OK='no'
+      exit_code=17
+    else
+      echo ' Proceeding'
+      #rm -f mv_ftp.out
+    fi
+
+    $SSH $USRID@$HOST /bin/sh $RHOME/bin/pubweb_cleanup.sh $RFTP $RUN no yes > ssh_ftpcleanup.out
+    OK=$?
+
+    if [ "$OK" != '0' ]
+    then
+      set +x
+      echo ' '
+      echo ' ********************************************** '
+      echo ' *** Error running cleanup script in remote *** '
+      echo ' ********************************************** '
+      echo ' '
+      sed "s/^/ssh_ftpcleanup.out : /g" ssh_ftpcleanup.out
+      [[ "$LOUD" = YES ]] && set -x
+      cleanup_OK='no'
+      exit_code=18
+    else
+      set +x
+      echo ' '
+      echo ' FTP clean up OK. '
+      echo ' '
+      sed "s/^/ssh_ftpcleanup.out : /g" ssh_ftpcleanup.out
+      [[ "$LOUD" = YES ]] && set -x
+      rm -f ssh_ftpcleanup.out
+    fi
+  fi
+
+# --------------------------------------------------------------------------------- #
+# 4. Ending output
+
+  if [ "$exit_code" = '0' ]
+  then
+    touch $COMOUT/$MODID.$cycle.pubwebdone
+  fi
+
+  set +x
+  echo ' '
+  echo ' Results'
+  echo ' -------'
+  echo "  web data pushed ?     : $push_web"
+  echo "  ftp data pushed ?     : $push_ftp"
+  echo "  directories cleaned ? : $cleanup_OK"
+  echo ' '
+  echo "Ending at : `date`"
+  echo ' '
+  echo '                   *** End of GFS-Wave pubweb postprocessor ***'
+  echo ' '
+  [[ "$LOUD" = YES ]] && set -x
+
+# -End of GFS-Wave polar postprocessor script ----------------------------------------- #

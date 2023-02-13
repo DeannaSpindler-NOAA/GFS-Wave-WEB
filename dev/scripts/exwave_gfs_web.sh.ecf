@@ -1,0 +1,1474 @@
+#!/bin/bash
+###############################################################################
+#                                                                             #
+# This script is the web page postprocessor for the GFS-Wave model.           #
+# It sets some shell script variables for export to child scripts and copies  #
+# some generally used files to the work directory. After this the actual      #
+# postprocessing is performed by the following child scripts :                #
+#                                                                             #
+# Remarks :                                                                   #
+# - The above scripts are (mostly) run under poe in parallel.                 #
+#   Each script runs in its own directory created in DATA. If all is well     #
+#   this directory disappears. If this directory is still there after poe     #
+#   has finished, an error has occured. Only then the output of the process   #
+#   is copied to the output file. Otherwise, the output is deleted.           #
+# - For non-fatal errors output is witten to the wave.log file.               #
+#                                                                             #
+# Origination  : 07/13/2007                                                   #
+# Last Update  : 04/13/2011                                                   #
+#                03/27/2020 transition to Dell                                #
+#                Aug 2021 modified for GFS-Wave using NetCDF and Python       #
+#                Sep 2022 transitioned to WCOSS2                              #
+###############################################################################
+# 0.  Preparations
+# 0.a Basic modes of operation
+
+  set -x
+  # Use LOUD variable to turn on/off trace.  Defaults to YES (on).
+  export LOUD=${LOUD:-YES}; [[ $LOUD = yes ]] && export LOUD=YES
+  [[ "$LOUD" != YES ]] && set +x
+  
+  echo "In scripts/exwave_gfs_web.sh.ecf, COMIN is ${COMIN}"
+  
+  cd $DATA
+  echo "in $0 JLOGFILE is $JLOGFILE"
+
+  ./postmsg "$JLOGFILE" "HAS BEGUN on `hostname`"
+
+  msg="Starting WEB POSTPROCESSOR SCRIPT for $MODID"
+  ./postmsg "$JLOGFILE" "$msg"
+
+  set +x
+  echo ' '
+  echo '                     *****************************************'
+  echo '                     *** GFS-Wave WEB POSTPROCESSOR SCRIPT ***'
+  echo '                     *****************************************'
+  echo ' '
+  echo "Starting at : `date`"
+  echo '-------------'
+  echo ' '
+  [[ "$LOUD" = YES ]] && set -x
+
+# 0.b Date and time stuff
+
+  export date=$PDY
+  export YMDH=${PDY}${cyc}
+
+# 0.c Defining model grids
+
+  export gridbuoy='points'
+  export grids='global.0p25'     ## model produces grib2 files for these model internal grids
+  export buoyfile="wave_${MODID}.buoys.full"  ## for buoy spectra and source files
+  
+  map_views='pacific N_pacific hawaii indian_o gmex atlantic N_atlantic alaska US_wc_zm1 US_wc_zm2 US_eastcoast US_keywest US_puertorico NW_atlantic NE_pacific NE_atlantic aus_ind_phi pac_islands arctic'
+  
+  set +x
+  echo ' '
+  echo 'Grid information  :'
+  echo '-------------------'
+  echo "   wave grids    : $grids"
+  echo "   output points : $buoyfile"
+  echo ' '
+  
+  [[ "$LOUD" = YES ]] && set -x
+
+# 0.d Set requests
+
+  export webgrib=''
+  export webbull='yes'
+  export webspec=''
+  export webplsp='yes'
+  export webplsr='yes'
+  export webmaps='yes'
+
+  set +x
+  echo ' '
+  echo 'Processing requests :'
+  echo '---------------------'
+  echo "   Ind. param GRIB files : $webgrib"
+  echo "   Bulletin files        : $webbull"
+  echo "   Spectral data files   : $webspec"
+  echo "   Spectral plots        : $webplsp"
+  echo "   Source term plots     : $webplsr"
+  echo "   Map plots             : $webmaps"
+  echo "   Map views             : $map_views"
+  echo ' '
+  [[ "$LOUD" = YES ]] && set -x
+
+# 0.e Initializations
+
+  exit_code=0
+  grib_OK='yes'
+  netcdf_OK='yes'
+  point_OK='yes'
+  bull_OK='yes'
+  spec_OK='yes'
+  plsp_OK='yes'
+  plsr_OK='yes'
+  plmp_OK='yes'
+  plotts_OK=''
+  modsetweb=$RUN
+
+# --------------------------------------------------------------------------- #
+# 1.  Get files that are used by most child scripts
+
+  set +x
+  echo ' '
+  echo 'Preparing input files :'
+  echo '-----------------------'
+  [[ "$LOUD" = YES ]] && set -x
+
+# 1.a Get the model definition files, output files and grib files
+
+  cp ${FIXwave}/wave_gfs.buoys.full ${DATA}/.
+  cp ${FIXwave}/buoys.* ${DATA}/.
+
+# 1.a.1 Set up the MPI command
+
+  ifile=1
+  #nfile=$( echo $LSB_HOSTS | wc -w | awk '{ print $1}' )
+  # nfile is now set in dev_envir.sh  
+  
+  if (( $nfile > 1 ))
+  then
+    cmdtype='mpiexec'
+  else
+    cmdtype='sh'
+  fi
+  
+  set +x
+  echo ' '
+  echo "   Copying model definition and data files."
+  [[ "$LOUD" = YES ]] && set -x
+
+# 1.a.1 Get the model definition file for the points
+
+  for grdID in $gridbuoy
+  do
+    
+	if [ -f "${COMIN}/${cyc}/wave/rundata/${RUN}.mod_def.${grdID}" ]
+	then
+	
+      cp ${COMIN}/${cyc}/wave/rundata/${RUN}.mod_def.${grdID} mod_def.${grdID}
+	
+	fi
+  
+  done
+  
+# 1.a.2 get the model grib2 files for arctic.9km, global.0p25
+  for grdID in $grids
+  do
+
+    cp ${COMIN}/${cyc}/wave/gridded/${RUN}.${cycle}.${grdID}.*.grib2 .
+	
+  done
+
+# 1.a.3 get the raw output points which are produced hourly, 
+# but only plotted for the cycle and 5 days of forecasts
+  for grdID in $gridbuoy
+  do
+  
+	cp ${COMIN}/${cyc}/wave/rundata/${RUN}.out_pnt.${grdID}.*.${cyc}0000 .
+	
+  done
+
+# 1.a.5 Error checks
+
+  for grdID in $grids 
+  do
+
+    set +x
+    nc=`ls ${RUN}.${cycle}.${grdID}.f???.grib2 | wc -l | awk '{print $1}'`
+    echo " Found $nc grib2 files for ${grdID} "
+    [[ "$LOUD" = YES ]] && set -x
+
+    if [ "$nc" = '0' ] 
+    then
+      set +x
+      echo ' '
+      echo '************************************ '
+      echo '*** ERROR : NO GRIB2 OUTPUT FILE *** '
+      echo '************************************ '
+      echo ' '
+      echo "$RUN web $grdID $date $cycle : grib2 output missing." >> $WAVELOG
+      [[ "$LOUD" = YES ]] && set -x
+      ./postmsg "$JLOGFILE" "NON-FATAL ERROR : NO GRIB2 OUTPUT FILE"
+      exit_code=1
+      grib_OK='no'
+    fi
+
+  done
+
+  for grdID in $gridbuoy
+  do
+
+    if [ ! -f mod_def.$grdID ] 
+    then
+      set +x
+      echo ' '
+      echo '************************************** '
+      echo '*** ERROR : NO mod_def.$grdID FILE *** '
+      echo '************************************** '
+      echo ' '
+      echo "$RUN web $grdID $date $cycle : mod_def file missing." >> $WAVELOG
+      [[ "$LOUD" = YES ]] && set -x
+      ./postmsg "$JLOGFILE" "NON-FATAL ERROR : NO MOD_DEF FILE"
+      exit_code=2
+      point_OK='no'
+    fi
+
+    set +x
+    nc=`ls ${RUN}.out_pnt.${grdID}.* | wc -l | awk '{print $1}'`
+    echo " Found ${nc} out_pnt files for ${grdID} "
+    [[ "$LOUD" = YES ]] && set -x
+
+    if [ "${nc}" = '0' ] 
+    then
+      set +x
+      echo ' '
+      echo '***************************************** '
+      echo '*** ERROR : NO RAW POINT OUTPUT FILES *** '
+      echo '***************************************** '
+      echo ' '
+      echo "$RUN web $grdID $date $cycle : out_pnt output missing." >> $WAVELOG
+      [[ "$LOUD" = YES ]] && set -x
+      ./postmsg "$JLOGFILE" "FATAL ERROR : NO out_pnt OUTPUT FILE"
+      exit_code=3
+      point_OK='no'
+    fi
+
+  done
+  
+# 1.b Mod def files 
+
+  for grdID in $gridbuoy 
+  do
+    if [ ! -f mod_def.${grdID} ]
+    then
+      if [ -f $FIXwave/ww3_grid.inp.$grdID ]
+      then
+        cp $FIXwave/ww3_grid.inp.$grdID $grdID.inp
+      fi
+
+      if [ ! -f $grdID.inp ]
+      then
+        msg="ABNORMAL EXIT: NO INP FILE FOR MODEL DEFINITION FILE"
+        ./postmsg "$JLOGFILE" "$msg"
+        set +x
+        echo ' '
+        echo '*********************************************************** '
+        echo '*** FATAL ERROR : NO INP FILE FOR MODEL DEFINITION FILE *** '
+        echo '*********************************************************** '
+        echo "                                grdID = $grdID"
+        echo ' '
+        echo $msg
+        echo "$RUN web $date $cycle : $grdID.inp missing." >> $WAVELOG
+        [[ "$LOUD" = YES ]] && set -x
+        exit_code=4
+        point_OK='no'
+      fi
+      
+      set +x
+      echo "   Generating mod_def file for $grdID ... "
+      [[ "$LOUD" = YES ]] && set -x
+	  
+	  ln -sf $grdID.inp ww3_grid.inp
+
+      $EXECwave/ww3_grid  > $grdID.out
+	  
+	  if [ ! -f mod_def.ww3 ]
+	  then
+        msg="ABNORMAL EXIT: NO MODEL DEFINITION FILE"
+		./postmsg "$JLOGFILE" "$msg"
+		set +x
+		echo ' '
+		echo '********************************************** '
+		echo '*** FATAL ERROR : NO MODEL DEFINITION FILE *** '
+		echo '********************************************** '
+		echo ' '
+		echo "$RUN web $grdID $date $cycle : fixed file(s) missing." >> $WAVELOG
+		echo $msg
+		[[ "$LOUD" = YES ]] && set -x
+		exit_code=5
+		point_OK='no'
+	  else
+		mv mod_def.ww3 mod_def.$grdID
+	  fi
+	fi
+	  
+  done
+
+# 1.c Bulletin file
+
+  for ID in $modsetweb
+  do
+    
+    if [ "$webbull" = 'yes' ]
+    then
+  
+      bullfile=$ID.$cycle.bull_tar
+      
+      if [ ! -f $bullfile ]
+      then
+        echo "cp $COMIN/$cyc/wave/station/$bullfile ."
+        cp $COMIN/$cyc/wave/station/$bullfile .
+      fi
+      
+      if [ ! -f $bullfile ]
+      then
+        set +x
+        echo ' '
+        echo '******************************** '
+        echo '*** ERROR : NO BULLETIN FILE *** '
+        echo '******************************** '
+        echo ' '
+        echo "$ID web $date $cycle : bulletin file missing." >> $WAVELOG
+        [[ "$LOUD" = YES ]] && set -x
+        exit_code=6
+        bull_OK='no'
+      fi
+    fi # webbull
+
+# 1.d Spectral data file
+
+    if [ "$webspec" = 'yes' ]
+    then
+    
+      specfile=$ID.$cycle.spec_tar
+      
+      if [ ! -f $specfile.gz ]
+      then
+        cp $COMIN/$cyc/wave/station/${specfile}.gz .
+      fi
+      
+      if [ ! -f ${specfile}.gz ]
+      then
+        set +x
+        echo ' '
+        echo '************************************* '
+        echo '*** ERROR : NO SPECTRAL DATA FILE *** '
+        echo '************************************* '
+        echo ' '
+        echo "$RUN web $date $cycle : spectral file missing." >> $WAVELOG
+        [[ "$LOUD" = YES ]] && set -x
+        exit_code=7
+        spec_OK='no'
+      fi
+    fi ## webspec
+      
+  done
+
+# 1.e Input template files
+
+  if [ -f $FIXwave/ww3_ounp.inp.tmpl ]
+  then
+    cp $FIXwave/ww3_ounp.inp.tmpl .
+  fi
+
+  if [ ! -f ww3_ounp.inp.tmpl ]
+  then
+    set +x
+    echo ' '
+    echo '***************************************************** '
+    echo '*** ERROR : NO WW3_OUNP TEMPLATE FOR STATION FILE *** '
+    echo '***************************************************** '
+    echo ' '
+    echo "$RUN web $date $cycle : Station template file missing." >> $WAVELOG
+    [[ "$LOUD" = YES ]] && set -x
+    ./postmsg "$JLOGFILE" "NON-FATAL ERROR : NO TEMPLATE FOR STATION FILE"
+    exit_code=8
+    point_OK='no'
+  fi
+
+  if [ -f $FIXwave/ww3_outp.inp.tmpl ]
+  then
+    cp $FIXwave/ww3_outp.inp.tmpl .
+  fi
+
+  if [ ! -f ww3_outp.inp.tmpl ]
+  then
+    set +x
+    echo ' '
+    echo '***************************************************** '
+    echo '*** ERROR : NO WW3_OUTP TEMPLATE FOR STATION FILE *** '
+    echo '***************************************************** '
+    echo ' '
+    echo "$RUN web $date $cycle : Station template file missing." >> $WAVELOG
+    [[ "$LOUD" = YES ]] && set -x
+    ./postmsg "$JLOGFILE" "NON-FATAL ERROR : NO TEMPLATE FOR STATION FILE"
+    exit_code=9
+    point_OK='no'
+  fi
+
+# 1.f Output locations
+
+  rm -f buoy.loc
+
+  if [ -f $FIXwave/$buoyfile ]
+  then
+    echo "cp $FIXwave/$buoyfile buoy.loc.temp" 
+    cp $FIXwave/$buoyfile buoy.loc.temp
+    sed -n '/^\$.*/!p' buoy.loc.temp > buoy.loc.temp2
+    rm -f buoy.loc.temp
+    sed "s/'//g" buoy.loc.temp2 > buoy.loc
+    rm -f buoy.loc.temp2
+    export buoys="`cat buoy.loc | awk '{ if ( $5 ~ /DAT/ || $5 ~ /XDT/ || $5 ~ /VBY/ ) { print $3 } }'`"
+  fi
+
+  if [ ! -f buoy.loc ]
+  then
+    set +x
+    echo ' '
+    echo '************************************* '
+    echo '*** ERROR : NO BUOY LOCATION FILE *** '
+    echo '************************************* '
+    echo ' '
+    echo "$MODID web $date $cycle : buoy location file missing." >> $WAVELOG
+    [[ "$LOUD" = YES ]] && set -x
+    exit_code=10
+    point_OK='no'
+  fi
+
+# 1.g Data Summary
+
+  set +x
+  echo ' '
+  echo '   Data summary : '
+  echo '   ---------------------------------------------'
+  echo "      Grib2 output files found           : $grib_OK"
+  echo "      Raw Point output file found        : $point_OK"
+  echo "      Bulletin tar file found            : $bull_OK"
+  echo "      Spectral data tar file found       : $spec_OK"
+  echo ' '
+
+# --------------------------------------------------------------------------------- #
+# 2.  Make first command file(s) (Ind. param grib files, bulletin and spectral files,
+#     and station plots)
+#
+# 2.a Command file set-up
+#     The command file points to $nfile files named cmdfile.$ifile.
+#     The actual work is distributed over these files. The skip parameter
+#     is used for load balancing.
+
+  echo ' '
+  echo 'Generate web data :'
+  echo '-------------------'
+
+  echo '   Making first command file (GRIB, NetCDF Files, Station plots) '
+  echo "   Set up command file structure (type = $cmdtype)."
+  echo "      Number of command files                       : $nfile"
+
+  rm -f cmdfile
+  rm -f cmdfile.*
+  
+  ifile=1
+
+  while (( $ifile <= $nfile ))
+  do
+    touch cmdfile.$ifile
+    chmod 700 cmdfile.$ifile
+    echo "./cmdfile.$ifile" >> cmdfile
+    ifile=$(( $ifile + 1 ))
+  done
+  
+  ifile=1
+
+  [[ "$LOUD" = YES ]] && set -x
+
+# 2.b Grib files ( convert to NetCDF for maps, and makes individual param grib2 files for the web)
+
+  if [ "$grib_OK" = 'yes' ] && [ "$webmaps" = 'yes' ] 
+  then
+  
+    echo "Converting grib2 files to NetCDF"
+    for file in *.grib2
+    do
+	
+	  fname=$(basename $file .grib2)
+      echo "$WGRIB2 ${fname}.grib2 -netcdf ${fname}.nc > grib2nc_${fname}.out 2>&1"  >> cmdfile.$ifile
+	  
+      if (( $nfile > 1 ))
+      then
+        ifile=$(( $ifile + 1 ))
+      fi
+	  
+      if (( $ifile > $nfile ))
+      then
+        ifile=1
+      fi	  
+	  
+	done
+		
+  fi  
+
+  if [ "$grib_OK" = 'yes' ] && [ "$webgrib" = 'yes' ] 
+  then
+  
+    export gribpars='WIND WDIR UGRD VGRD HTSGW WVPER WVDIR PERPW DIRPW WVHGT SWPER SWDIR SWELL'
+
+    for grdID in $grids
+    do
+      
+	  echo "$USHwave/gfswavewebgrib2_comb.sh $grdID > grib2_$grdID.out 2>&1"  >> cmdfile.$ifile
+	  
+	  if (( $nfile > 1 ))
+      then
+        ifile=$(( $ifile + 1 ))
+      fi
+	  
+      if (( $ifile > $nfile ))
+      then
+        ifile=1
+      fi
+	  
+    done
+	
+  fi
+
+# 2.c Bulletin files
+
+  if [ "$bull_OK" = 'yes' ] && [ "$webbull" = 'yes' ]
+  then
+
+    for ID in $modsetweb
+    do
+
+      echo "$USHwave/gfswavewebbull.sh $ID > bull_${ID}.out 2>&1"    >> cmdfile.$ifile
+	  
+	  if (( $nfile > 1 ))
+      then
+        ifile=$(( $ifile + 1 ))
+      fi
+	  
+      if (( $ifile > $nfile ))
+      then
+        ifile=1
+      fi
+
+    done
+
+  fi
+
+# 2.d Spectral files
+
+  if [ "$spec_OK" = 'yes' ] && [ "$webspec" = 'yes' ]
+  then
+
+    for ID in $modsetweb
+    do
+
+      echo "$USHwave/gfswavewebspec.sh $ID > spec_${ID}.out 2>&1"   >> cmdfile.$ifile
+
+      if (( $nfile > 1 ))
+      then
+        ifile=$(( $ifile + 1 ))
+      fi
+	  
+      if (( $ifile > $nfile ))
+      then
+        ifile=1
+      fi
+
+    done
+
+  fi
+
+# 2.e Individual station plots
+
+  if [ "$point_OK" = 'yes' ] && [ -n "$buoys" ]
+  then
+    export dtplsp=86400.
+    export toffplsp='0' 
+
+# 2.e.1 Writing buoy log file from out_pnt.ww3
+
+    set +x
+    echo ' '
+    echo ' Writing buoy log file ...'
+    echo " Executing $EXECwave/ww3_outp"
+    echo ' '
+    [[ "$LOUD" = YES ]] && set -x 
+
+    ymdh=`$NDATE -9 $YMDH`
+    tstart="`echo $ymdh | cut -c1-8` `echo $ymdh | cut -c9-10`0000"
+
+    sed -e "s/TIME/$tstart/g" \
+        -e "s/DT/$dtplsp/g" \
+        -e "s/POINT/1/g" \
+        -e "s/ITYPE/0/g" \
+                     ww3_outp.inp.tmpl > ww3_outp.inp
+
+    ln -sf mod_def.$gridbuoy mod_def.ww3
+	ln -sf $RUN.out_pnt.$gridbuoy.${PDY}.${cyc}0000 out_pnt.ww3
+    
+    $EXECwave/ww3_outp > buoy_tmp.loc
+    # this makes buoy_log.ww3 which is used in ush scripts
+	# 4036 buoys, one less than in buoy.loc
+	
+    rm -f buoy_tmp*.loc    ## this is just the redirect from the screen
+    rm -f ww3_outp.inp
+
+  fi
+
+  echo "GFS-Wave model (static grids) " > spec_ids
+  echo "NOAA/NWS/NCEP/EMC " >> spec_ids
+  
+  if [ "$webplsp" = 'yes' ] || [ "$webplsr" = 'yes' ]
+  then
+  
+    for buoy in $buoys
+	do
+
+# 2.e.2 Spectral plots for the DAT and XDT buoys
+        
+      if [ "$webplsp" = 'yes' ] && [ "$plsp_OK" = 'yes' ]
+	  then
+	  
+	    echo "$USHwave/gfswavewebncsp.sh $buoy > plsp_$buoy.out 2>&1" >> cmdfile.$ifile
+		if (( $nfile > 1 ))
+		then
+          ifile=$(( $ifile + 1 ))
+		fi
+		
+		if (( $ifile > $nfile ))
+		then
+         ifile=1
+		fi
+		
+	  fi
+
+# 2.e.3 Source term plots
+
+      if [ "$webplsr" = 'yes' ] && [ "$plsr_OK" = 'yes' ]
+	  then
+	  
+	    #echo "Source term plots are made for $buoy"
+		echo "$USHwave/gfswavewebncsr.sh $buoy > plsr_$buoy.out 2>&1" >> cmdfile.$ifile
+		
+		if (( $nfile > 1 ))
+		then
+          ifile=$(( $ifile + 1 ))
+		fi
+		
+		if (( $ifile > $nfile ))
+		then
+          ifile=1
+		fi
+	  
+	  fi
+
+    done
+  fi
+  
+# --------------------------------------------------------------------------- #
+# 3 Execute first command file
+# 3.a Execution
+
+  set +x
+  echo "   Executing first command file at `date`."
+  [[ "$LOUD" = YES ]] && set -x
+  
+  #export CFP_VERBOSE=1
+  if [ "$nfile" -gt '1' ]
+  then
+    #mpirun.lsf ${utilexec}/mpiserial
+    #mpirun cfp cmdfile 
+    chmod +x cmdfile
+    export LD_LIBRARY_PATH=/apps/dev/pmi-fix:$LD_LIBRARY_PATH
+    mpiexec -np ${nfile} --cpu-bind verbose,core cfp $DATA/cmdfile
+	exit=$?
+  else
+    ./cmdfile.1
+	exit=$?
+  fi
+  
+  if (( $exit != 0 ))
+  then
+    set +x
+	echo '  ERROR in first MPIRUN, EXITING NOW'
+    exit	
+  fi
+
+# --------------------------------------------------------------------------- #
+# 4. Check for errors
+
+  set +x
+  echo ' '
+  echo '   Checking for errors (error output concatenated below).'
+  [[ "$LOUD" = YES ]] && set -x
+
+# 4.a NetCDF files
+
+  if [ "$webplsp" = 'yes' ] &&  [ "$spec_OK" = 'yes' ] && [ "$point_OK" = 'yes' ]
+  then
+    for grdID in $gridbuoy
+    do
+	
+	  set +x
+	  nc=`ls ww3.*_spec.nc | wc -l | awk '{print $1}'`
+	  echo " Found $nc spec.nc files for $grdID "
+	  [[ "$LOUD" = YES ]] && set -x
+	  
+	  if [ "$nc" = '0' ] 
+	  then
+	    set +x
+		echo "      Error in spectral NETCDF output for $grdID."
+		./postmsg "$JLOGFILE" "NON-FATAL ERROR in ww3_ounc output for $grdID."
+		[[ "$LOUD" = YES ]] && set -x
+		netcdf_OK='no'
+	  else
+		set +x
+		echo "      NetCDF output successful for spectral $grdID."
+		[[ "$LOUD" = YES ]] && set -x
+	  fi
+	done
+  fi
+  
+  if [ "$webplsr" = 'yes' ] &&  [ "$spec_OK" = 'yes' ] && [ "$point_OK" = 'yes' ]
+  then
+    for grdID in $gridbuoy
+    do
+	
+	  set +x
+	  nc=`ls ww3.*_src.nc | wc -l | awk '{print $1}'`
+	  echo " Found $nc src.nc files for $grdID "
+	  [[ "$LOUD" = YES ]] && set -x
+	  
+	  if [ "$nc" = '0' ] 
+	  then
+	    set +x
+		echo "      Error in source NETCDF output for $grdID."
+		./postmsg "$JLOGFILE" "NON-FATAL ERROR in ww3_ounc output for $grdID."
+		[[ "$LOUD" = YES ]] && set -x
+		netcdf_OK='no'
+	  else
+		set +x
+		echo "      NetCDF output successful for source $grdID."
+		[[ "$LOUD" = YES ]] && set -x
+	  fi
+	  
+    done
+  fi
+
+# 4.b Individual parameter GRIB2 files
+
+  if [ "$grib_OK" = 'yes' ] && [ "$webgrib" = 'yes' ]
+  then
+    for grdID in $grids
+    do
+	
+	  if [ -d grib2_$grdID ]
+      then
+        set +x
+        echo "      Error in parsing GRIB2 file for $grdID."
+        ./postmsg "$JLOGFILE" "NON-FATAL ERROR in parsing GRIB2 file for $grdID."
+        [[ "$LOUD" = YES ]] && set -x
+		grib_OK='no'
+      else
+        rm -f grib2_$grdID.out
+        set +x
+        echo "      GRIB2 parsing successful for $grdID."
+        [[ "$LOUD" = YES ]] && set -x
+      fi
+	  
+	done
+  
+  fi
+  
+  if [ "$grib_OK" = 'yes' ] && [ "$webmaps" = 'yes' ]
+  then
+  
+    for grdID in $grids
+    do
+	
+	  set +x
+	  ng=`ls ${RUN}.${cycle}.${grdID}.f???.grib2 | wc -l | awk '{print $1}'`
+	  nc=`ls ${RUN}.${cycle}.${grdID}.f???.nc | wc -l | awk '{print $1}'`
+	  echo " Found $nc grib2-to-netcdf files for ${grdID} "
+	  [[ "$LOUD" = YES ]] && set -x
+	  
+	  if [ "$nc" != "$ng" ] 
+	  then
+        set +x
+		echo ' '
+		echo '************************************ '
+		echo '*** ERROR : GRIB2 to NetCDF FILE *** '
+		echo '************************************ '
+		echo ' '
+		echo "$RUN web $grdID $date $cycle : grib2 to netcdf missing" >> $WAVELOG
+		[[ "$LOUD" = YES ]] && set -x
+		./postmsg "$JLOGFILE" "NON-FATAL ERROR : MISSING NETCDF FILES"
+		exit_code=16
+		plmp_OK='no'
+	  else
+        rm -f grib2nc_*.${grdID}.*.out
+        set +x
+        echo " GRIB2NC file generation successful for $grdID."
+        [[ "$LOUD" = YES ]] && set -x
+	  fi
+	  
+    done
+  fi
+
+# 4.c Bulletin files
+
+  if [ "$bull_OK" = 'yes' ] && [ "$webbull" = 'yes' ]
+  then
+    for ID in $modsetweb
+    do
+      if [ -d bull_${ID} ]
+      then
+        set +x
+        echo '      Error in bulletin files.'
+        [[ "$LOUD" = YES ]] && set -x
+      else
+        cp bull_${ID}.out bull_${ID}.out.keep
+        rm -f bull_${ID}.out
+        set +x
+        echo '      Bulletin files OK.'
+        [[ "$LOUD" = YES ]] && set -x
+      fi
+    done
+  fi
+
+# 4.d Spectral data files
+
+  if [ "$spec_OK" = 'yes' ] && [ "$webspec" = 'yes' ]
+  then
+    for ID in $modsetweb
+    do
+      if [ -d spec_${ID} ]
+      then
+        set +x
+        echo '      Error in spectral data files.'
+        [[ "$LOUD" = YES ]] && set -x
+      else
+        cp spec_${ID}.out spec_${ID}.out.keep
+        rm -f spec_${ID}.out
+        set +x
+        echo '      Spectral data files OK.'
+        [[ "$LOUD" = YES ]] && set -x
+      fi
+    done
+  fi
+
+# 4.e Spectral plots
+
+  if [ "$point_OK" = 'yes' ] && [ "$webplsp" = 'yes' ] && [ -n "$buoys" ]
+  then
+    set +x
+    for buoy in $buoys
+    do
+      if [ -d plsp_$buoy ]
+      then
+        echo "      Error in spectral plot for $buoy."
+      else
+        rm -f plsp_$buoy.out
+		rm -f ww3.$buoy_spec.nc
+        echo "      Spectral plot for $buoy OK."
+      fi
+    done
+    [[ "$LOUD" = YES ]] && set -x
+  fi
+
+# 4.f Source term plots
+
+  if [ "$point_OK" = 'yes' ] && [ "$webplsr" = 'yes' ] && [ -n "$buoys" ]
+  then
+    set +x
+    for buoy in $buoys
+    do
+      if [ -d plsr_$buoy ]
+      then
+        echo "      Error in source term plot for $buoy."
+      else
+        rm -f plsr_$buoy.out
+		rm -f ww3.$buoy_src.nc
+        echo "      Source term plot for $buoy OK."
+      fi
+    done
+    [[ "$LOUD" = YES ]] && set -x
+  fi
+
+
+# --------------------------------------------------------------------------- #
+# 5. Map plots command file
+
+  if [ "$webmaps" = 'yes' ] && [ "$plmp_OK" = 'yes' ] && [ "$netcdf_OK" = 'yes' ]
+  then
+
+    set +x
+    echo ' '
+    echo '  Making second command file (Map plots) '
+    echo "  Set up command file structure (type = $cmdtype)."
+    echo "     Number of command files                : $nfile"
+    echo ' '
+
+	rm -f cmdfile
+	rm -f cmdfile.*
+	
+    ifile=1
+	
+	while (( $ifile <= $nfile ))
+	do
+      touch cmdfile.$ifile
+	  chmod 700 cmdfile.$ifile
+	  echo "./cmdfile.$ifile" >> cmdfile
+	  ifile=$(( $ifile + 1 ))
+	done
+	
+	ifile=1
+  
+	[[ "$LOUD" = YES ]] && set -x
+
+	start=0
+	fcsts=''
+	while(($start <= 240)); do
+	  #typeset -Z3 one_fcst=$start
+	  one_fcst=$(printf "%03d" $start)
+      fcsts="$fcsts $one_fcst"
+	  start=$((start + 3))
+	done
+
+    for view in $map_views
+    do
+	
+	  for fcsthr in $fcsts
+	  do
+	  
+	    echo "$USHwave/gfswavewebmap.sh ${PDY} ${fcsthr} ${view}  > map_${PDY}_${fcsthr}_${view}.out 2>&1" >> cmdfile.$ifile
+		
+		if (( $nfile > 1 ))
+		then
+          ifile=$(( $ifile + 1 ))
+		fi
+		
+		if (( $ifile > $nfile ))
+		then
+          ifile=1
+		fi
+
+	  done
+	  
+    done
+
+# --------------------------------------------------------------------------- #
+# 6. Execute second command file
+
+    set +x
+    echo "   Executing second command file at `date`."
+    [[ "$LOUD" = YES ]] && set -x
+	
+    if [ "$nfile" -gt '1' ]
+    then
+      chmod +x cmdfile
+      mpiexec -np ${nfile} --cpu-bind verbose,core cfp $DATA/cmdfile
+	  exit=$?
+    else
+      ./cmdfile.1
+      exit=$?
+    fi
+	
+	if (( $exit != 0 ))
+	then
+      set +x
+	  echo '  ERROR in second MPIRUN, EXITING NOW'
+      exit_code=99
+	fi
+  
+  fi  # end of webmaps loop
+
+# --------------------------------------------------------------------------- #
+# 7. Error capturing
+
+  if [ "$webmaps" = 'yes' ] && [ "$plmp_OK" = 'yes' ] && [ "$netcdf_OK" = 'yes' ]
+  then
+  
+	for view in $map_views
+	do
+    
+  	  set +x
+	  nc=`ls ${view}*.png | wc -l | awk '{print $1}'`
+	  echo " Found $nc ${view}*.png files for $grdID "
+	  [[ "$LOUD" = YES ]] && set -x
+	  
+	  if [ "$nc" = '0' ] 
+	  then
+	    set +x
+		echo "      Error in Python webmap output for $grdID."
+		./postmsg "$JLOGFILE" "FATAL ERROR in ww3_grahics.py output for $grdID."
+		[[ "$LOUD" = YES ]] && set -x
+		plmp_OK='no'
+	  else
+	    set +x
+		echo "      Python map output successful for $view."
+		[[ "$LOUD" = YES ]] && set -x
+	  fi
+	
+	  for fcsthr in $fcsts
+	  do
+	    if [ -d map_${PDY}_${fcsthr}_${view} ] && [[ "$plmp_OK" = 'no' ]] 
+		then
+		  set +x
+		  echo "*************************************************************"
+		  echo "*** Error in map plot for region $view and fcsthr $fcsthr ***"
+		  echo "*************************************************************"
+		  sed s/^/map_${PDY}_${fcsthr}_${view}.out:/g map_${PDY}.out
+		  echo ' '
+		  [[ "$LOUD" = YES ]] && set -x
+		  rm -rf map_${PDY}_${fcsthr}_${view}
+		  rm -f map_${PDY}_${fcsthr}_${view}.out
+		  exit_code=30
+        else
+		  set +x
+		  echo "    Map plot for region $view and fcsthr $fcsthr OK "
+		  [[ "$LOUD" = YES ]] && set -x
+		  rm -f map_${PDY}_${fcsthr}_${view}.out
+        fi
+	  done
+    done
+    
+  fi
+
+# 8. Catting output errors
+
+  if [ -f *.out ]
+  then
+
+# 8.a Individual parameter GRIB2 files
+
+    for grdID in $grids
+    do
+      if [ -f grib2_$grdID.out ]
+      then
+        set +x
+        echo ' '
+        echo '*****************************************'
+        echo '*** ERROR OUTPUT gfswavewebgrib2_comb.sh ***'
+        echo '*****************************************'
+        echo ' '
+        echo "$RUN web $grdID $date $cycle : error in GRIB2 parsing." >> $WAVELOG
+        ./postmsg "$JLOGFILE" "NON-FATAL ERROR in gfswavewebgrib2_comb.sh"
+        exit_code=17
+        sed "s/^/grib2_$grdID.out : /g"  grib2_${grdID}.out
+        rm -f grib2_$grdID.out
+        [[ "$LOUD" = YES ]] && set -x
+      fi
+    done
+
+# 8.b Bulletin data files
+
+    for ID in $modsetweb
+    do
+      if [ -f bull_${ID}.out ]
+      then
+        set +x
+        echo '****************************************'
+        echo '*** ERROR OUTPUT gfswavewebbull.sh ***'
+        echo '****************************************'
+        echo ' '
+        echo "$ID web $date $cycle : error in bulletins." >> $WAVELOG
+        ./postmsg "$JLOGFILE" "NON-FATAL ERROR in gfswavewebbull.sh"
+        exit_code=18
+        sed "s/^/bull_${ID}.out : /g"  bull_${ID}.out
+        echo ' '
+        rm -f bull_${ID}.out
+        [[ "$LOUD" = YES ]] && set -x
+      fi
+
+# 8.c Spectral data files
+
+      if [ -f spec_${ID}.out ]
+	  then
+	    set +x
+		echo '****************************************'
+		echo '*** ERROR OUTPUT gfswavewebspec.sh ***'
+		echo '****************************************'
+		echo ' '
+		echo "$ID web $date $cycle : error in spectral data." >> $WAVELOG
+		./postmsg "$JLOGFILE" "NON-FATAL ERROR in gfswavewebspec.sh"
+		exit_code=19
+		sed "s/^/spec_${ID}.out : /g"  spec_${ID}.out
+		echo ' '
+		rm -f spec_${ID}.out
+		[[ "$LOUD" = YES ]] && set -x
+      fi
+    done
+	
+# 8.d Spectral plots
+
+    if [ -f plsp_*.out ]
+    then
+      set +x
+      echo '****************************************'
+      echo '*** ERROR OUTPUT gfswavewebncsp.sh ***'
+      echo '****************************************'
+      echo '          (Possibly more than one call)'
+      echo ' '
+      echo "$ID web $date $cycle : error in spectral plot(s)." >> $WAVELOG
+	  ./postmsg "$JLOGFILE" "NON-FATAL ERROR in gfswavewebncsp.sh"
+      exit_code=20
+      for file in plsp_*.out
+      do
+        sed "s/^/$file : /g"  $file
+        rm -f $file
+        echo ' '
+      done
+      [[ "$LOUD" = YES ]] && set -x
+    fi
+
+# 8.e Source term plots
+
+    if [ -f plsr_*.out ]
+    then
+      set +x
+      echo '****************************************'
+      echo '*** ERROR OUTPUT gfswavewebncsr.sh ***'
+      echo '****************************************'
+      echo '          (Possibly more than one call)'
+      echo ' '
+      echo "$ID web $date $cycle : error in source term plot(s)." >> $WAVELOG
+	  ./postmsg "$JLOGFILE" "NON-FATAL ERROR in gfswavewebncsr.sh"
+      exit_code=21
+      for file in plsr_*.out
+      do
+        sed "s/^/$file : /g"  $file
+        rm -f $file
+        echo ' '
+      done
+      [[ "$LOUD" = YES ]] && set -x
+    fi
+
+  fi  ## if [ -f *.out ]
+
+# Generate python time series (uses pubweb for getting ndbc data in)
+# 0. Generate time series using python
+
+  if [ "${plotts_OK}" = "yes" ]
+  then
+
+    mkdir -p ${DATA}/python
+    cd ${DATA}/python
+	
+	if [ -f $FIXwave/plot_ts_wmo_multi_1.py ] ; then
+      echo 'Copying plot_ts_wmo_multi_1.py'
+	  cp -f $FIXwave/plot_ts_wmo_multi_1.py  plot_ts.py
+	else
+      echo ' '
+	  echo '********************************************************'
+	  echo "*** ERR : No $FIXwave/plot_ts_wmo_multi_1.py copied. ***"
+	  echo '********************************************************'
+	  echo ' '
+	  err=6;export err;err_chk
+	fi
+	
+	if [ -f $USHwave/wave_multi_1_plotts.sh ] ; then
+      echo 'plotths.sh'
+	  cp -f $USHwave/wave_multi_1_plotts.sh  wave_multi_1_plotts.sh
+	else
+      echo ' '
+	  echo '********************************************************'
+	  echo "*** ERR : No $USHwave/wave_multi_1_plotts.sh copied. ***"
+	  echo '********************************************************'
+	  echo ' '
+	  err=6;export err;err_chk
+	fi
+	
+	if [ -f $FIXwave/wave_$MODID.buoys ]
+	then
+	  cat $FIXwave/wave_$MODID.buoys | grep DAT | sed '/\$/d' | awk '{print $3}' | sed 's/'\''//g' | grep -v '[A-Z]' \
+        > buoylist
+	else
+      echo ' '
+	  echo '******************************************************'
+	  echo "*** ERR : No $FIXwave/wave_$MODID_buoys list created *"
+	  echo '******************************************************'
+	  echo ' '
+	  err=6;export err;err_chk
+	fi
+	
+	rm -f cmdfile
+	for tlag in 00 006 012 024 048 072
+	do
+	
+	  PDYCN=`$NDATE -${tlag} $PDY$cyc`
+	  
+	  echo $PDYCN
+	  
+	  PDYN=`echo $PDYCN | cut -c1-8`
+	  cycn=`echo $PDYCN | cut -c9-10`
+	  echo $PDYN
+	  	  
+# Get wind speeds
+	  if [ -f ${COMOUT}/${RUN}.${PDYN}/${RUN}.t${cycn}z.outpnt ]
+	  then
+	    echo "cp -f ${COMOUT}/${RUN}.${PDYN}/${RUN}.t${cycn}z.outpnt ./out_pnt.$PDYCN" >> cmdfile
+	  fi
+	done
+	
+    chmod +x cmdfile
+    mpiexec -np ${nfile} --cpu-bind verbose,core cfp $DATA/cmdfile
+
+# Prepare the cmdfile for using mpiserial
+    echo 'Preparing cmdfile'
+	nb=`cat buoylist | wc -l`
+	
+	rm -f cmdfile
+	touch cmdfile
+	
+# Run bufr2buoy to extract buoy data for last N days
+	ndays=5
+	nhours=`expr ${ndays} \* 24`
+	
+	ymdh_last=${PDY}"00"
+	
+	ymdh_buoy_last=`$NDATE +${nhours} ${ymdh_last}`
+	ymdh_buoy=`$NDATE -${nhours} ${ymdh_last}`
+	
+	while [ ${ymdh_buoy} -le ${ymdh_buoy_last} ]
+	do
+	  PDYbuoy=`echo ${ymdh_buoy} | cut -c1-8`
+	  $USHwave/bufr2buoy.sh ${PDYbuoy}
+	  ymdh_buoy=`$NDATE 24 ${ymdh_buoy}`
+	done
+	
+	cat $DATA/file.???????? > buoys.file
+	
+	for nb in `seq 1 ${nb}`
+	do
+	
+	  bnum=`sed ''$nb'!d' buoylist`
+	  grep ${bnum} buoys.file > ${bnum}.bufr2buoy
+	  echo "rm -rf $nb" > cmdfile.$nb
+	  echo " mkdir -p $nb" >> cmdfile.$nb
+	  echo "cd $nb" >> cmdfile.$nb
+	  echo "cp ../plot_ts.py ./" >> cmdfile.$nb
+	  echo "cp ../${bnum}.bufr2buoy ./${bnum}.ndbc" >> cmdfile.$nb
+	  echo "cp ../buoylist ./" >>cmdfile.$nb
+	  echo "cp ../wave_multi_1_plotts.sh ./" >> cmdfile.$nb
+	  #echo "cp ../wave_glw_u-v-n_plotts.sh ./" >> cmdfile.$nb
+	  echo "./wave_multi_1_plotts.sh ${bnum} ${PDY} ${cyc} 1> plotts.out 2>&1" >> cmdfile.$nb
+	  
+	  if [ "$cyc" = "01" ] || [ "$cyc" = "07" ] ||[ "$cyc" = "13" ] ||[ "$cyc" = "19" ]
+	  then
+	    if [ $bnum -ne 9 ] || [ $bnum -ne 10 ] || [ $bnum -ne 11 ] || [ $bnum -ne 20 ] || [ $bnum -ne 27 ]
+		then
+		  echo "cp ../plot_ts_newold.py ./" >> cmdfile.$nb
+		  echo "./wave_glw_u-v-n_plotts.sh ${bnum} ${PDY} ${cyc} 1> plotts_oldnew.out 2>&1" >> cmdfile.$nb
+		fi
+	  fi
+	  
+	  echo "cd .." >> cmdfile.$nb
+	  echo "touch done.$nb" >> cmdfile.$nb
+	  chmod 744 cmdfile.$nb
+	  echo cmdfile.$nb >> cmdfile
+	  
+	done
+	
+    chmod +x cmdfile
+	mpiexec -np ${nfile} --cpu-bind verbose,core cfp $DATA/cmdfile
+    
+	mv ./*/*.png ./
+	
+	view=tsval
+	tar -cvf plots_${view}.$cycle.tar ${view}*.*.png >> plots_$view.out
+	cp ./plots_${view}.$cycle.tar $WEBOUT/plots
+	
+  fi  ## if [ "${plotts_OK}" = "yes" ]
+
+# --------------------------------------------------------------------------- #
+# 9. Moving spectral and source term plots to web directory
+  cd ${DATA}
+
+  if [ "$SENDWEB" = 'YES' ]
+  then
+      
+    set +x
+    echo ' '
+    echo "    Preparing spectral and source term plots tar files"
+    echo ' '
+    [[ "$LOUD" = YES ]] && set -x
+    
+    if [ "$point_OK" = 'yes' ] && [ "$webplsp" = 'yes' ] && [ -n "$buoys" ]
+    then
+    
+      rm -f plots_spectra.$cycle.tar plots_spectra.out 
+      tar -cvf plots_spectra.$cycle.tar $RUN.*.spec.png >> plots_spectra.out 
+      err=$?
+      
+      if [ "$err" != 0 ]
+      then
+        set +x
+        echo '    ERROR: Could not generate tar file for spectral plots'
+        [[ "$LOUD" = YES ]] && set -x
+        exit_code=22
+      fi
+      
+      if [ ! -f "plots_spectra.$cycle.tar" ]
+      then
+        set +x
+        echo '    ERROR : Could not find spectral tar file'
+        [[ "$LOUD" = YES ]] && set -x
+        exit_code=23
+      else
+        nimg=`wc -l plots_spectra.out | awk '{ print $1}'`
+        if [ "$nimg" != 0 ]
+        then
+        
+          set +x
+          echo "    Tarred $nimg spectral plot files "
+          echo "  (Moving to $WEBOUT/plots)  "
+          [[ "$LOUD" = YES ]] && set -x
+          
+          mv plots_spectra.$cycle.tar $WEBOUT/plots/.
+          err=$?
+          
+          if [ "$err" != 0 ]
+          then
+            set +x
+            echo "    ERROR : Could not successfully move spectra tar files "
+            [[ "$LOUD" = YES ]] && set -x
+            exit_code=24
+          else
+            rm -f $RUN.*.spec.png
+            rm -f plots_spectra.out
+          fi
+        fi
+      fi
+    fi  # spectra  
+      
+    if [ "$point_OK" = 'yes' ] && [ "$webplsr" = 'yes' ] && [ -n "$buoys" ]
+    then
+    
+      rm -f plots_source.$cycle.tar plots_source.out 
+      tar -cvf plots_source.$cycle.tar $RUN.*.source.png >> plots_source.out 
+      err=$?
+      
+      if [ "$err" != 0 ]
+      then
+        set +x
+        echo '    ERROR: Could not generate tar file for source plots'
+        [[ "$LOUD" = YES ]] && set -x
+        exit_code=26
+      fi  
+      
+      if [ ! -f "plots_source.$cycle.tar" ]
+      then
+        set +x
+        echo '    ERROR : Could not find source tar file'
+        [[ "$LOUD" = YES ]] && set -x
+        exit_code=27
+      else
+        nimg=`wc -l plots_source.out | awk '{ print $1}'`
+        if [ "$nimg" != 0 ]
+        then
+        
+          set +x
+          echo "    Tarred $nimg source plot files "
+          echo "  (Moving to $WEBOUT/plots)  "
+          [[ "$LOUD" = YES ]] && set -x
+          
+          mv plots_source.$cycle.tar $WEBOUT/plots/.
+          err=$?
+          
+          if [ "$err" != 0 ]
+          then
+            set +x
+            echo "    ERROR : Could not succesfully move source files "
+            [[ "$LOUD" = YES ]] && set -x
+            exit_code=28
+          else
+            rm -f $RUN.*.source.png
+            rm -f plots_source.out
+          fi
+        fi
+      fi
+    fi # source terms
+  fi  # sendweb
+  
+# --------------------------------------------------------------------------- #
+# 9 Moving map plots to web directory
+
+  if [ "$SENDWEB" = 'YES' ]
+  then
+
+    if [ "$webmaps" = 'yes' ] && [ "$plmp_OK" = 'yes' ] && [ "$netcdf_OK" = 'yes' ] 
+    then
+    
+      set +x
+      echo ' ' 
+      echo "  Creating map plots tar files MPI commands..."
+      echo ' '
+      [[ "$LOUD" = YES ]] && set -x
+      
+      for view in $map_views
+      do  
+        if [ -f "buoys.$view" ]
+        then
+          mv buoys.$view $WEBOUT/buoy_locs/.
+        else
+          echo "ERROR: Could not find the buoys.$view"
+        fi
+        
+        rm -f map_${view}.$cycle.tar plots_$view.out
+        tar -cvf map_${view}.$cycle.tar $view*.png > plots_$view.out
+        
+        if [ -f "map_${view}.$cycle.tar" ]
+        then
+        
+          exit_code=0
+          [[ "$LOUD" = YES ]] && set -x
+          
+          mv map_${view}.$cycle.tar $WEBOUT/plots/.
+          err=$?
+          
+          if [ "$err" != 0 ]
+          then
+            set +x
+            echo "    ERROR : Could not succesfully move map tarfile for $view"
+            [[ "$LOUD" = YES ]] && set -x
+            exit_code=33
+          else
+            set +x
+            rm -f $view.*.png
+            [[ "$LOUD" = YES ]] && set -x
+          fi
+        else
+          echo " ERROR : Could not tar the plot files for $view"
+        fi
+      done
+      
+    fi ## maps ok
+  fi  ## SENDWEB
+
+# --------------------------------------------------------------------------- #
+# 11 Clean up
+
+  set +x
+  rm -f cmdfile*
+  rm -f *.spec_tar.gz
+  rm -f *.ww3
+  rm -f *.grib2
+  rm -f *.nc
+  rm -f *.out_pnt.*
+  rm -f mod_def.*
+  [[ "$LOUD" = YES ]] && set -x
+
+# --------------------------------------------------------------------------- #
+# 12.  Ending output
+
+  if [ "$exit_code" = '0' ]
+  then
+    echo "export ymdh_ibm=$YMDH" > $web/date.$RUN
+    touch $COMOUT/$MODID.$cycle.webdone
+  fi
+
+  set +x
+  echo ' '
+  echo "Ending at : `date`"
+  echo ' '
+  echo '                   *** End of WW3 web postprocessor ***'
+  echo ' '
+  [[ "$LOUD" = YES ]] && set -x
+
+# End of WW3 web prostprocessor script -------------------------------------- #

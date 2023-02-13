@@ -1,0 +1,301 @@
+#!/bin/bash -l 
+# --------------------------------------------------------------------------- #
+#                                                                             #
+# gfswave.cron : This script manages the running of gfswave.boss, by setting  #
+#                the PDY file and by redirecting the output.                  #
+#                                                                             #
+# Remarks   - Can be run interactively, or from LL.                           #
+#           - Check file in 2.b needs to correspond to jobs to run in         #
+#             gfswave.boss.                                                   #
+#           - PDY file updated by gfswave.boss.                               #
+#           - made a slight change to run on cirrus as this m/c does not      #
+#             as yet have a prod or dev status                                #
+#                                                                             #
+# Last Changed : 03-09-2009                                    February 2007  #
+#                May 2020  Transition to Dell                                 #
+#                August 2021 Transition to GFS-Wave                           #
+#                Sept 2022 Transition to WCOSS2                               #
+# --------------------------------------------------------------------------- #
+# 0.  Initializations
+# 0.a LSF stuff
+
+#@ queue
+#PBS -A ${PCODE}
+
+# Setup the modules and directories
+
+  export WAVE_USER='deanna.spindler'
+  export SYSVER='gfs.v16.3.3'
+  export HOMEDIR="/lfs/h2/emc/vpppg/noscrub/${WAVE_USER}"
+  export LSFWAVE="${HOMEDIR}/VPPPG/EMC_waves-prod-gen/WEB/lsf_scripts/wave_${SYSVER}"
+  
+  if [ -f ${LSFWAVE}/dev_envir.sh ]
+  then
+    . ${LSFWAVE}/dev_envir.sh
+  else
+    echo '##############################################'
+    echo '### ERROR !! : COULD NOT FIND ENVIR FILE   ###'
+    echo '##############################################'
+    exit 1
+  fi
+
+  module reset
+  module load intel/19.1.3.304
+  module load PrgEnv-intel/8.2.0
+  module load craype/2.7.17
+  module load cray-mpich/8.1.12
+  module load cray-pals/1.2.2
+  module load prod_util/2.0.14
+  module load libjpeg/9c
+  module load grib_util/1.2.4
+  module load prod_envir/2.0.6
+  module load util_shared/1.5.0
+  module load wgrib2/2.0.8
+  module load netcdf/4.7.4
+  module load python/3.8.6
+  module load gsl/2.7
+  module load cfp/2.0.4
+  module load imagemagick/7.0.8-7
+  module load udunits/2.2.28
+  module load nco/4.9.7
+  module load geos/3.8.1
+  module load proj/7.1.0  
+  module list
+  echo " in gfswave.cron, COMROOT is $COMROOT"
+  echo " in gfswave.cron, PRODVER is ${PRODVER}"
+  
+# 0.a Set necessary variables
+
+  mkdir -p ${DATAROOT}
+
+  export time_file="${LSFWAVE}/PDY_${RUN}"       # file with time info
+  export version_file="${LSFWAVE}/version.card"  # file with version info
+  script="${RUN}.boss"                           # script to run
+  key_on='wave'                                  # key on retro, wind or wave files
+
+# 0.b ID output
+
+  cd $LSFWAVE
+
+  echo '                  ****************************************'
+  echo '                  ***  WW3 HOOK-IN SCRIPT gfswave.cron ***'
+  echo '                  ****************************************'
+  echo ' '
+  echo " Time : `date`"
+  echo ' '
+  echo '        Script settings :'
+  echo '        ------------------------------------------------------------'
+  echo "           model ID           : ${RUN}"
+  echo "           GFS prod directory : ${COMROOT}/${MODID}/${PRODVER}"
+  echo "           keying on          : $key_on"
+  echo "           start directory    : $LSFWAVE"
+  echo "           output directory   : $OUT"
+  echo "           time file          : $time_file"
+  echo "           script to run      : $script"
+
+# 0.c Host assessment
+
+  export host_s="`hostname | cut -c1-1`"
+  case $host_s in
+   'd' ) host='dogwood' ;;
+   'c' ) host='cactus' ;;
+    *  ) echo ' '
+         echo ' ***********************************'
+         echo " *** HOST $host_s NOT RECOGNIZED ***"
+         echo ' ***********************************'
+         echo ' '
+         date=`date -u +"%Y%m%d t%Hz"`
+         echo "gfswave.cron $date : host [$host_s] not recognized." >> $JLOGFILE
+         exit 1 ;;
+  esac
+
+  echo "in $0 logfile is $JLOGFILE "
+
+  echo ' '
+  echo "           host machine       : $host"
+  
+  export mach=`grep primary /lfs/h1/ops/prod/config/prodmachinefile | cut -d: -f2`
+  echo "           production  mach.  : $mach"
+
+  if [ -f ${LSFWAVE}/HOST_${RUN} ]
+  then
+    . ${LSFWAVE}/HOST_${RUN}
+  else
+    echo ' '
+    echo ' **************************************************'
+    echo " *** FILE WITH HOST INFO NOT FOUND (HOST_$RUN)  ***"
+    echo ' **************************************************'
+    echo ' '
+    exit 10
+  fi
+
+  if [ "$run_on" = 'none' ]
+  then
+    target='none'
+  else
+    target=`cat /etc/cluster_name | awk '{ print $1 }'`
+  fi
+  echo "           running on         : $run_on [$target]"
+
+  if [ "$host" != "$target" ]
+  then
+    echo ' '
+    echo " Time : `date`"
+    echo ' '
+    echo ' '
+    echo '                        *** End of gfswave.cron ***'
+    exit 0
+  fi
+
+# --------------------------------------------------------------------------- #
+# 2.  Find date and cycle
+# 2.a Source PDY file
+
+  if [ -f $time_file ]
+  then
+    . $time_file
+  else
+    echo ' '
+    echo ' **************************************************'
+    echo " *** FILE WITH TIME INFO NOT FOUND (PDY_$RUN)   ***"
+    echo ' **************************************************'
+    echo ' '
+    exit 20
+  fi
+
+  date=$PDY
+  cycle=t${cyc}z
+  YMDH=$date$cyc
+
+  echo ' '
+  echo " Time : `date`"
+  echo ' '
+  echo '        Date and time :'
+  echo '        ------------------------------------------------------------'
+  echo "           date and cycle     : $date $cycle"
+
+# 2.c Set file to check and check presence
+
+  case $key_on in 
+    'wind' ) check_dir=$com_wind/gfs.$date/${cyc}
+             check_file=$check_dir/gfs.${cycle}.pgrb2.0p25.f000 ;;
+    'retro' ) check_dir=$com_retro/gdas.$date
+             check_file=$check_dir/gdas.${cycle}.pgrb2.0p25.f000 ;;
+    'wave' ) check_dir=$COMROOT/$MODID/${PRODVER}/${MODID}.${date}/$cyc/wave/station
+             check_file=$check_dir/$RUN.$cycle.spec_tar.gz ;;
+      *    ) echo ' ' ; echo '              *** NOTHING TO KEY ON ***'
+             echo ' ' ; exit 21 ;;
+  esac
+
+  echo "           check file         : $check_file"
+
+  if [ -f $check_file ]
+  then
+    echo '                                File is present'
+  else
+    echo '                                File is absent'
+    echo ' '
+    echo " Time : `date`"
+    echo ' '
+    echo ' '
+    echo '                        *** End of gfswave.cron ***'
+    exit 0
+  fi
+
+# --------------------------------------------------------------------------- #
+# 3.  Manage batch job
+
+  batch=${RUN}.${MODEL_VER}.HOOK       # batch job name (made here)
+  rm -f ${LSFWAVE}/${batch}.out
+
+  echo ' '
+  echo " Time : `date`"
+  echo ' '
+  echo '        Batch job :'
+  echo '        ------------------------------------------------------------'
+
+  OK='yes'
+  nr_job=`qselect -N $batch | wc -l | awk '{ print $1}'`
+  echo "           number of jobs     : $nr_job"
+
+  if [ "$nr_job" = '1' ]
+  then
+    echo ' '
+    echo "           no need to run $batch ..."
+    OK='no'
+  fi
+
+  if [ "$nr_job" -gt '1' ]
+  then
+    echo ' '
+    echo "           something wrong, will attempt to kill all jobs ..."
+    OK='no'
+
+    jobs=`qstat -u $WAVE_USER | grep $batch | awk '{ print $1}'`
+
+    if [ -n "$jobs" ]
+    then
+      for job in $jobs
+      do
+        echo "              killing $job ..."
+        qdel $job > /dev/null 2>&1
+      done
+    fi
+
+  fi
+
+  if [ "$OK" = 'yes' ]
+  then
+    echo "           Making new job     : $batch"
+    rm -f $batch
+
+    echo "#@!/bin/bash"                                    >  $batch
+    echo "#PBS -N ${batch}"                                >> $batch
+    echo "#PBS -A ${PCODE}"                                >> $batch
+    echo "#PBS -o ${LSFWAVE}/${batch}.out"                 >> $batch
+    echo "#PBS -e ${LSFWAVE}/${batch}.err"                 >> $batch
+	echo "#PBS -l walltime=01:00:00"                       >> $batch
+    echo "#PBS -l place=vscatter,select=1:ncpus=1:mem=4G"  >> $batch
+    echo "#PBS -q dev"                                     >> $batch
+    echo "#PBS -V"                                         >> $batch
+ #   echo "#@ resources=ConsumableMemory(500 MB)"                    >> $batch
+ #   echo "#@ task_affinity=cpu(1)"                                  >> $batch
+    echo " "                                               >> $batch
+    echo "  mkdir -p $OUT/${RUN}.$date"                    >> $batch
+    echo "  $LSFWAVE/$script > $OUT/${RUN}.$date/$script.$cycle.out 2>&1" >> $batch
+    echo " "                                               >> $batch
+    #echo "  rm -f $LSFWAVE/$batch.out"                            >> $batch
+
+    echo "           output of script $script routed to"
+    echo "           $OUT/${RUN}.$date/$script.$cycle.out"
+
+    echo "           starting $batch at `date`"
+    jobID=$(qsub ${LSFWAVE}/${batch})
+
+    OK=$?
+    if [ "$OK" != '0' ]
+    then
+      echo ' '
+      echo ' *************************************'
+      echo ' *** ERROR IN SUBMITTING BATCH JOB ***'
+      echo ' *************************************'
+      echo ' '
+      exit 30
+    fi
+    
+    echo "              job ID is $jobID"
+    #rm -f $batch
+    #rm -f $batch.out
+
+  fi
+
+# --------------------------------------------------------------------------- #
+# 4.  End of all.
+
+  echo ' '
+  echo ' '
+  echo " Time : `date`"
+  echo ' '
+  echo '                        *** End of gfswave.cron ***'
+
+# - end of gfswave.cron ----------------------------------------------------- #

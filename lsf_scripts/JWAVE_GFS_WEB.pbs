@@ -1,0 +1,93 @@
+#!/bin/bash 
+
+############################################
+### STUFF TO BE SET BY SMS IN PRODUCTION ###
+############################################
+
+#PBS -o JWAVE_GFS_WEB.out
+#PBS -e JWAVE_GFS_WEB.err
+#PBS -N JWAVE_GFS_WEB
+#PBS -l walltime=1:00:00
+#PBS -l place=vscatter:excl,select=8:ncpus=128:mem=500G
+#PBS -q dev
+#PBS -A GFS-DEV
+#PBS -V
+
+# Load dev_envir (sets up modules, global env etc)
+
+. ${LSFWAVE}/dev_envir.sh   ## was done in gfswave.cron, but does not get passed along!
+module list
+export PYTHON=`which python`
+echo "in $0 PYTHON is $PYTHON"
+
+# Parallel Environment variables
+
+ulimit -s unlimited
+
+# The following are obsolete and pertain to the IBM Parallel Operating Environment (POE)
+
+#export MP_EAGER_LIMIT=165536
+#export MP_COREFILE_FORMAT=core.txt
+#export MP_EUIDEVELOP=min
+#export MP_EUIDEVICE=sn_all
+#export MP_EUILIB=us
+#export MP_MPILIB=mpich2 
+
+#export MP_LABELIO=yes
+#export MP_SINGLE_THREAD=yes
+#export MP_USE_BULK_XFER=yes
+#export MPICH_ALLTOALL_THROTTLE=0
+#export MP_TASK_AFFINITY=cpu 
+export MP_CSS_INTERRUPT=yes
+
+# Set variables
+
+export job=JWAVE_GFS_WEB
+
+# Set PDY and cycle here
+
+echo "in $0 LSFWAVE is $LSFWAVE"
+
+if [ -f $LSFWAVE/PDY_$RUN ]
+then
+   . $LSFWAVE/PDY_$RUN
+else
+  echo '#######################################################################'
+  echo '### ERROR in JWAVE_GFS_WEB.lsf !! : COULD NOT SET THE PDY AND CYCLE ###'
+  echo '#######################################################################'
+  exit 1
+fi
+
+# Set Version numbers
+
+echo "in $0 MODEL_VER is $MODEL_VER"
+if ! [ ${MODEL_VER} ]
+then
+  if [ -f $LSFWAVE/version.card ]
+  then
+    . $LSFWAVE/version.card
+  else
+    echo '##############################################'
+    echo '### ERROR !! : COULD NOT FIND VERSION CARD ###'
+    echo '##############################################'
+    exit 1
+  fi
+fi
+
+# EMC specific environments
+
+#export RUN_ENVIR=$ENVIR
+
+echo "in $0 UTILROOT is $UTILROOT"
+
+export DATA=$DATAROOT/${job}.${MODEL_VER}
+echo "in $0 DATA is $DATA"
+if [ -d $DATA ]; then
+  rm -rf $DATA/*
+fi
+
+# Execute the actual J job
+
+#######################################################
+${HOMEDIR}/VPPPG/EMC_waves-prod-gen/WEB/dev/wave_$MODID.${MODEL_VER}/jobs/JWAVE_GFS_WEB
+#######################################################
