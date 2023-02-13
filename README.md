@@ -1,7 +1,7 @@
 # GFS-Wave-WEB
 Create the graphics for the GFS-Wave and upload them to the website.
 
-lsf_scripts
+lsf_scripts:
 
    dev_envir.sh # loads modules and exports all the directory variables
 
@@ -15,26 +15,26 @@ lsf_scripts
    
    JWAVE_GFS_PUBWEB.pbs # pushes them to the website
 
-dev
+dev:
 
 exec, fix, jobs, parm, scripts, sorc, ush
 
-Output
+Output:
 /user/path/to/wavepa/GFS_WEB
 
-COM
+COM: 
 gfswave.YYYYMMDD has the gfs.tHHz.webdone and pubwebdone files that
 tells the demon whether to run the process or not.  Cron checks every
 10 minutes.
 
-WEB 
+WEB:  
 gfswave.YYYYMMDDHH has the actual output files, 2.2G/day, needs to be
 cleaned up periodically especially before production switches
 buoy_locs: 18 files
 data: 918 *.bull files
 plots: 21 *tar files
 
-OUTPUT
+OUTPUT: 
 gfswave.YYYYMMDD has the gfswave.boss.tHHz.out files
 
 
