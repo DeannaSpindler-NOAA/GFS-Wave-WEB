@@ -37,4 +37,6 @@ plots: 21 *tar files
 OUTPUT: 
 gfswave.YYYYMMDD has the gfswave.boss.tHHz.out files
 
+Cron:
 
+5,15,25,35,45,55 * * * * ${NEWHOME}/gfswave_WEB_tasks.sh 1>${NEWHOME}/CronLogs/gfswave_WEB_tasks.log 2>&1
