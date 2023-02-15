@@ -1,0 +1,8 @@
+SHELL=/bin/bash -l
+
+NEWHOME='path/to/cron'
+
+# Run GFS-Wave WEB/PUBWEB workflow
+5,15,25,35,45,55 * * * * ${NEWHOME}/scripts/gfswave_WEB_tasks.sh 1>${NEWHOME}/logs/gfswave_WEB_tasks.log 2>&1
+
+# end of mycrontab
